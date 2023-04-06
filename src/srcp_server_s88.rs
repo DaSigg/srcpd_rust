@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::srcp_server_types::{
-  Message, SRCPMessage, SRCPMessageDevice, SRCPMessageDir, SRCPMessageType, SRCPServer,
+  Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPServer,
 };
 use log::warn;
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
@@ -145,13 +145,11 @@ impl S88 {
               //Veränderung, senden
               s88_states[spi_bus][fb_nr] = state;
               let msg = Message::new_srcpmessage(SRCPMessage::new(
+                None,
                 self.busnr + spi_bus, //die S88 Busse gehen auf unterschiedliche SRCP Busnummern
-                SRCPMessageDir::Info,
-                SRCPMessageType::GET,
-                SRCPMessageDevice::FB {
-                  nr: fb_nr + 1, //Nummerierung bei SRCP beginnt bei 1
-                  value: state,
-                },
+                SRCPMessageID::Info,
+                SRCPMessageDevice::FB,
+                vec![(fb_nr + 1).to_string(), (state as usize).to_string()], //Nummerierung bei SRCP beginnt bei 1
               ));
               match tx.send(msg) {
                 Err(msg) => {
@@ -176,28 +174,36 @@ impl S88 {
                   let state = s88_states[spi_bus][fb_nr];
                   if state {
                     let msg = Message::new_srcpmessage(SRCPMessage::new(
+                      Some(session_id),
                       self.busnr + spi_bus, //die S88 Busse gehen auf unterschiedliche SRCP Busnummern
-                      SRCPMessageDir::InfoSession {
-                        session_id: session_id,
-                      },
-                      SRCPMessageType::GET,
-                      SRCPMessageDevice::FB {
-                        nr: fb_nr + 1, //Nummerierung bei SRCP beginnt bei 1
-                        value: state,
-                      },
+                      SRCPMessageID::Info,
+                      SRCPMessageDevice::FB,
+                      vec![(fb_nr + 1).to_string(), (state as usize).to_string()], //Nummerierung bei SRCP beginnt bei 1
                     ));
-                    match tx.send(msg) {
-                      Err(msg) => {
-                        warn!("S88 execute send Error, wird beendet: {}", msg);
-                        break;
-                      }
-                      Ok(_) => {}
+                    if let Err(msg) = tx.send(msg) {
+                      warn!("S88 execute send Error, wird beendet: {}", msg);
+                      break;
                     }
                   }
                 }
               }
             }
-            _ => {} //Alles andere ist hier nicht relevant, S88 kann keine Kommandos ausführen
+            Message::SRCPMessage { srcp_message } => {
+              //Alles andere ist hier nicht relevant, S88 kann keine Kommandos ausführen -> Error
+              if let Err(msg) = tx.send(Message::new_srcpmessage(SRCPMessage {
+                session_id: Some(srcp_message.session_id.unwrap()),
+                bus: srcp_message.bus,
+                message_id: SRCPMessageID::Err {
+                  err_code: "420".to_string(),
+                  err_text: "unsupported device protocol".to_string(),
+                },
+                device: SRCPMessageDevice::FB,
+                parameter: vec![],
+              })) {
+                warn!("S88 execute send Error, wird beendet: {}", msg);
+                break;
+              }
+            }
           }
         }
         Err(_) => {} //Nichts empfangen
