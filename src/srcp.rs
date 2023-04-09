@@ -29,7 +29,7 @@ const SRCP_VERSION: &'static str = "0.8.4";
 
 //Verwaltung Sender und Session
 struct SenderSession {
-  sender: Sender<Message>,
+  sender: Sender<SRCPMessage>,
   session_id: u32,
 }
 //Info Messages können für Info und Command clients relevant sein
@@ -347,61 +347,50 @@ fn srcp_server(port: u16, _watchdog: bool, all_cmd_tx: &HashMap<usize, Sender<Me
 /// * msg - Die zu versendende Message
 /// * nur_mit_session - Nur versenden wenn Sessin ID vorhanden
 fn send_info_msg_for_client_group(
-  clients: &mut Vec<SenderSession>, msg: &Message, nur_mit_session: bool,
+  clients: &mut Vec<SenderSession>, srcp_message: &SRCPMessage, nur_mit_session: bool,
 ) {
-  if let Message::SRCPMessage { ref srcp_message } = msg {
-    if srcp_message.session_id.is_none() && nur_mit_session {
-      return;
-    }
-    let mut i = 0;
-    while i < clients.len() {
-      if srcp_message.session_id.is_none()
-        || (clients[i].session_id == srcp_message.session_id.unwrap())
-      {
-        if clients[i].sender.send(msg.clone()).is_err() {
-          //Diesen Client gibt es nicht mehr
-          info!(
-            "dispachter_srcp_info delete Client session_id={}",
-            clients[i].session_id
-          );
-          clients.remove(i);
-        } else {
-          i += 1;
-        }
+  if srcp_message.session_id.is_none() && nur_mit_session {
+    return;
+  }
+  let mut i = 0;
+  while i < clients.len() {
+    if srcp_message.session_id.is_none()
+      || (clients[i].session_id == srcp_message.session_id.unwrap())
+    {
+      if clients[i].sender.send(srcp_message.clone()).is_err() {
+        //Diesen Client gibt es nicht mehr
+        info!(
+          "dispachter_srcp_info delete Client session_id={}",
+          clients[i].session_id
+        );
+        clients.remove(i);
       } else {
         i += 1;
       }
+    } else {
+      i += 1;
     }
   }
-}
-/// Senden einer SRCP Info Message an Clients
-/// Wenn eine Message nicht versendet werden konnte, dann wird der entsprechende Client gelöscht.
-/// # Arguments
-/// * msg - Die zu versendende Message
-/// * alle - Wenn true, dann wird die Message an alle aktuell engemeldeten Info Clients versendet
-/// * session_id - Wenn all == false, dann wird die Message nur an Client mit dieser Session ID versendet (Info und Command)
-fn send_info_msg(msg: &Message) {
-  let mut guard = ALLE_SRCP_INFO_SENDER.lock().unwrap();
-  let prot_alle_info_sender = &mut *guard; // take a &mut borrow of the value
-
-  //Zuerst alle Info Clients abarbeiten
-  send_info_msg_for_client_group(&mut prot_alle_info_sender.info_client, msg, false);
-  //Dann alle Command Clients, hier aber nur wenn Session ID angegeben ist
-  send_info_msg_for_client_group(&mut prot_alle_info_sender.command_client, msg, true);
 }
 
 /// Dispatcher für alle SRCP Info Messages von allen Servern zu Weiterleitung an alle
 /// aktuell angemeldeten Info Clients
 /// # Arguments
 /// * info_rx - Channel über die die Info Messages empfangen werden
-fn dispachter_srcp_info(info_rx: Receiver<Message>) {
+fn dispachter_srcp_info(info_rx: Receiver<SRCPMessage>) {
   loop {
     let msg = info_rx
       .recv()
       .expect("Error: dispachter_srcp_info info_rx.recv() fail");
-    if let Message::SRCPMessage { srcp_message: _ } = msg {
-      //Info Message an alle oder einen angemeldeten SRCP Info Clients versenden
-      send_info_msg(&msg);
+    {
+      //Info/Ok/Err Message an alle oder einen angemeldeten SRCP Info Clients versenden
+      let mut guard = ALLE_SRCP_INFO_SENDER.lock().unwrap();
+      let prot_alle_info_sender = &mut *guard; // take a &mut borrow of the value
+
+      //Zuerst alle Info Clients abarbeiten
+      send_info_msg_for_client_group(&mut prot_alle_info_sender.info_client, &msg, false);
+      //Dann alle Command Clients, hier aber nur wenn Session ID angegeben ist
+      send_info_msg_for_client_group(&mut prot_alle_info_sender.command_client, &msg, true);
     }
   }
 }
@@ -413,7 +402,7 @@ fn dispachter_srcp_info(info_rx: Receiver<Message>) {
 /// * all_cmd_tx - Alle Channel Sender für Kommandos zu den SRCP Servern. Key ist die Busnummer.
 pub fn startup(
   config_file_values: &HashMap<String, HashMap<String, Option<String>>>,
-  info_rx: Receiver<Message>, all_cmd_tx: &HashMap<usize, Sender<Message>>,
+  info_rx: Receiver<SRCPMessage>, all_cmd_tx: &HashMap<usize, Sender<Message>>,
 ) -> Result<(), String> {
   let port = config_file_values
     .get("srcp")

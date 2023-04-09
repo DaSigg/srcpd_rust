@@ -18,11 +18,12 @@ use std::{
 use crate::{srcp_server_ddl::DDL, srcp_server_s88::S88, srcp_server_types::Message};
 
 mod srcp;
+mod srcp_devices_ddl;
 mod srcp_server_ddl;
 mod srcp_server_s88;
 mod srcp_server_types;
 
-/// Liefert alle vorhandenen SRCP servertypen zurück
+/// Liefert alle vorhandenen SRCP Servertypen zurück
 fn get_alle_srcp_server() -> Vec<Rc<RefCell<dyn srcp_server_types::SRCPServer>>> {
   vec![
     Rc::new(RefCell::new(S88::new())),
@@ -186,7 +187,10 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
       if aktive_srcp_busse.contains_key(&srcpsrv.get_busnr()) {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         srcpsrv.start(cmd_rx, info_tx.clone());
-        all_cmd_tx.insert(srcpsrv.get_busnr(), cmd_tx);
+        //Für alle SRCP Busse des Servers falls er mehrere unterstützt (wie z.B. S88)
+        for sub_bus in 0..srcpsrv.get_srcp_bus_count() {
+          all_cmd_tx.insert(srcpsrv.get_busnr() + sub_bus, cmd_tx.clone());
+        }
       }
     }
   }

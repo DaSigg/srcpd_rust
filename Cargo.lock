@@ -76,6 +76,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpio"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fe6783270536547ac473c9d2ae5a7e0e715ea43f29004ced47fbd1c1372d2c7"
+
+[[package]]
 name = "hermit-abi"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -236,6 +242,7 @@ version = "0.1.0"
 dependencies = [
  "configparser",
  "env_logger",
+ "gpio",
  "log",
  "nix 0.26.2",
  "spidev",

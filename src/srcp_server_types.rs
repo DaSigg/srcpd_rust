@@ -5,8 +5,7 @@ use std::{
 };
 
 ///SRCP Message
-#[derive(Clone, Debug)]
-#[allow(dead_code)] //TODO
+#[derive(Clone, Debug, PartialEq, Copy)]
 pub enum SRCPMessageType {
   GET,
   SET,
@@ -24,9 +23,11 @@ impl ToString for SRCPMessageType {
 
 /// SRCP Message Angaben, Kommando oder Info (an einen oder alle)
 #[derive(Clone, Debug)]
-#[allow(dead_code)] //TODO
 pub enum SRCPMessageID {
-  Info, //Info an einen oder alle SRCP Info Clients
+  Info {
+    //Info an einen oder alle SRCP Info Clients
+    info_code: String,
+  },
   Command {
     //Kommando von Session -> Info / Ok / Err Antwort muss an diese Session
     msg_type: SRCPMessageType,
@@ -44,15 +45,30 @@ pub enum SRCPMessageID {
 impl ToString for SRCPMessageID {
   fn to_string(&self) -> String {
     match &self {
-      SRCPMessageID::Info => "INFO".to_string(),
+      SRCPMessageID::Info { info_code } => info_code.to_owned() + " INFO",
       SRCPMessageID::Command { msg_type } => msg_type.to_string(),
       SRCPMessageID::Ok { ok_code } => ok_code.to_owned() + " OK",
       SRCPMessageID::Err { err_code, err_text } => err_code.to_owned() + " ERROR " + err_text,
     }
   }
 }
+impl SRCPMessageID {
+  /// Welche Message muss als String in Kurzform ohne Device und Parameter ausgegeben werden
+  /// Return true für Kurzform
+  pub fn str_kurz(&self) -> bool {
+    match &self {
+      SRCPMessageID::Info { info_code: _ } => false,
+      SRCPMessageID::Command { msg_type: _ } => false,
+      SRCPMessageID::Ok { ok_code: _ } => true,
+      SRCPMessageID::Err {
+        err_code: _,
+        err_text: _,
+      } => true,
+    }
+  }
+}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum SRCPMessageDevice {
   //Generic Accessory
   GA,
@@ -72,7 +88,7 @@ impl ToString for SRCPMessageDevice {
       SRCPMessageDevice::GL => "GL".to_string(),
       SRCPMessageDevice::FB => "FB".to_string(),
       SRCPMessageDevice::SM => "GA".to_string(),
-      SRCPMessageDevice::Power => "Power".to_string(),
+      SRCPMessageDevice::Power => "POWER".to_string(),
     }
   }
 }
@@ -87,7 +103,7 @@ pub struct SRCPMessage {
   pub parameter: Vec<String>,
 }
 impl SRCPMessage {
-  ///Neue SRCPMessage erstellen
+  /// Neue SRCPMessage erstellen
   pub fn new(
     session_id: Option<u32>, bus: usize, message_id: SRCPMessageID, device: SRCPMessageDevice,
     parameter: Vec<String>,
@@ -98,6 +114,38 @@ impl SRCPMessage {
       message_id,
       device,
       parameter,
+    }
+  }
+  /// Neue SRCPMessage Ok erstellen
+  /// # Arguments
+  /// * msg - Kommandomessage aus der Session, Bus, Device kopiert werden.
+  /// * ok_code - Zu verwendender OK Code
+  pub fn new_ok(msg: &SRCPMessage, ok_code: &'static str) -> SRCPMessage {
+    SRCPMessage {
+      session_id: msg.session_id,
+      bus: msg.bus,
+      message_id: SRCPMessageID::Ok {
+        ok_code: ok_code.to_string(),
+      },
+      device: msg.device.clone(),
+      parameter: vec![],
+    }
+  }
+  /// Neue SRCPMessage Ok erstellen
+  /// # Arguments
+  /// * msg - Kommandomessage aus der Session, Bus, Device kopiert werden.
+  /// * err_code - Zu verwendender OK Code
+  /// * err_text - Zu verwendender Errortext
+  pub fn new_err(msg: &SRCPMessage, err_code: &'static str, err_text: &'static str) -> SRCPMessage {
+    SRCPMessage {
+      session_id: msg.session_id,
+      bus: msg.bus,
+      message_id: SRCPMessageID::Err {
+        err_code: err_code.to_string(),
+        err_text: err_text.to_string(),
+      },
+      device: msg.device.clone(),
+      parameter: vec![],
     }
   }
   /// Neue SRCPMessage Command aus String erstellen.
@@ -135,23 +183,39 @@ impl SRCPMessage {
       parameter: cmd[3..].iter().map(|s| s.to_string()).collect(),
     })
   }
+  /// Liefert die Adresse des Kommandos.
+  /// Das ist, egal ob GA, GL immer der erste Parameter
+  /// Return Err wenn keine Adresse vorhanden
+  pub fn get_adr(&self) -> Option<u32> {
+    if self.parameter.len() > 0 {
+      return self.parameter[0].parse::<u32>().ok();
+    }
+    None
+  }
 }
 impl ToString for SRCPMessage {
   fn to_string(&self) -> String {
-    format!(
-      "{} {} {} {}", //INFO/SET/GET.... BusNr Device Parameter
-      self.message_id.to_string(),
-      self.bus,
-      self.device.to_string(),
-      {
-        let mut p_str = String::from("");
-        for p in &self.parameter {
-          p_str += p.as_str();
-          p_str += " ";
+    //INFO/SET/GET.... BusNr Device Parameter
+    //OK
+    //ERROR Text
+    if self.message_id.str_kurz() {
+      self.message_id.to_string()
+    } else {
+      format!(
+        "{} {} {} {}",
+        self.message_id.to_string(),
+        self.bus,
+        self.device.to_string(),
+        {
+          let mut p_str = String::from("");
+          for p in &self.parameter {
+            p_str += p.as_str();
+            p_str += " ";
+          }
+          p_str
         }
-        p_str
-      }
-    )
+      )
+    }
   }
 }
 
@@ -205,5 +269,5 @@ pub trait SRCPServer {
   /// # Arguments
   /// * rx - Channel Receiver über denn Kommandos empfangen werden
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
-  fn start(&self, rx: Receiver<Message>, tx: Sender<Message>);
+  fn start(&self, rx: Receiver<Message>, tx: Sender<SRCPMessage>);
 }

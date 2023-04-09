@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::srcp_server_types::{
-  Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPServer,
+  Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType, SRCPServer,
 };
 use log::warn;
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
@@ -53,7 +53,7 @@ impl S88 {
   /// # Arguments
   /// * rx - Channel Receiver über denn Kommandos empfangen werden
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
-  fn execute(&self, rx: Receiver<Message>, tx: Sender<Message>) {
+  fn execute(&self, rx: Receiver<Message>, tx: Sender<SRCPMessage>) {
     let mut spidevs: Vec<Option<Spidev>> = Vec::new();
     //SPI Interfaces für alle Konfigurierten S88 Busse (number_bytes>0) öffnen
     for (i, number) in self.number_bytes.iter().enumerate() {
@@ -144,13 +144,15 @@ impl S88 {
             if state != s88_states[spi_bus][fb_nr] {
               //Veränderung, senden
               s88_states[spi_bus][fb_nr] = state;
-              let msg = Message::new_srcpmessage(SRCPMessage::new(
+              let msg = SRCPMessage::new(
                 None,
                 self.busnr + spi_bus, //die S88 Busse gehen auf unterschiedliche SRCP Busnummern
-                SRCPMessageID::Info,
+                SRCPMessageID::Info {
+                  info_code: "100".to_string(),
+                },
                 SRCPMessageDevice::FB,
                 vec![(fb_nr + 1).to_string(), (state as usize).to_string()], //Nummerierung bei SRCP beginnt bei 1
-              ));
+              );
               match tx.send(msg) {
                 Err(msg) => {
                   warn!("S88 execute send Error, wird beendet: {}", msg);
@@ -173,13 +175,15 @@ impl S88 {
                 for fb_nr in 0..s88_states[spi_bus].len() {
                   let state = s88_states[spi_bus][fb_nr];
                   if state {
-                    let msg = Message::new_srcpmessage(SRCPMessage::new(
+                    let msg = SRCPMessage::new(
                       Some(session_id),
                       self.busnr + spi_bus, //die S88 Busse gehen auf unterschiedliche SRCP Busnummern
-                      SRCPMessageID::Info,
+                      SRCPMessageID::Info {
+                        info_code: "100".to_string(),
+                      },
                       SRCPMessageDevice::FB,
                       vec![(fb_nr + 1).to_string(), (state as usize).to_string()], //Nummerierung bei SRCP beginnt bei 1
-                    ));
+                    );
                     if let Err(msg) = tx.send(msg) {
                       warn!("S88 execute send Error, wird beendet: {}", msg);
                       break;
@@ -189,19 +193,56 @@ impl S88 {
               }
             }
             Message::SRCPMessage { srcp_message } => {
-              //Alles andere ist hier nicht relevant, S88 kann keine Kommandos ausführen -> Error
-              if let Err(msg) = tx.send(Message::new_srcpmessage(SRCPMessage {
-                session_id: Some(srcp_message.session_id.unwrap()),
-                bus: srcp_message.bus,
-                message_id: SRCPMessageID::Err {
-                  err_code: "420".to_string(),
-                  err_text: "unsupported device protocol".to_string(),
-                },
-                device: SRCPMessageDevice::FB,
-                parameter: vec![],
-              })) {
-                warn!("S88 execute send Error, wird beendet: {}", msg);
-                break;
+              let mut send_error = true;
+              //Alles andere als GET FB ist hier nicht relevant, S88 kann keine anderen Kommandos ausführen -> Error
+              match srcp_message.message_id {
+                SRCPMessageID::Command { msg_type } => {
+                  if (msg_type == SRCPMessageType::GET)
+                    && (srcp_message.device == SRCPMessageDevice::FB)
+                    && (srcp_message.parameter.len() > 0)
+                  {
+                    if let Ok(fb_nr) = srcp_message.parameter[0].parse::<usize>() {
+                      //SRCP Nummern beginnen bei 1
+                      if (fb_nr > 0) && (s88_states[srcp_message.bus - self.busnr].len() >= fb_nr) {
+                        send_error = false;
+                        if let Err(msg) = tx.send(SRCPMessage {
+                          session_id: Some(srcp_message.session_id.unwrap()),
+                          bus: srcp_message.bus,
+                          message_id: SRCPMessageID::Info {
+                            info_code: "100".to_string(),
+                          },
+                          device: SRCPMessageDevice::FB,
+                          parameter: vec![
+                            if s88_states[srcp_message.bus - self.busnr][fb_nr - 1] {
+                              "1".to_string()
+                            } else {
+                              "0".to_string()
+                            },
+                          ],
+                        }) {
+                          warn!("S88 execute send Error, wird beendet: {}", msg);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {}
+              }
+              if send_error {
+                if let Err(msg) = tx.send(SRCPMessage {
+                  session_id: Some(srcp_message.session_id.unwrap()),
+                  bus: srcp_message.bus,
+                  message_id: SRCPMessageID::Err {
+                    err_code: "420".to_string(),
+                    err_text: "unsupported device protocol".to_string(),
+                  },
+                  device: SRCPMessageDevice::FB,
+                  parameter: vec![],
+                }) {
+                  warn!("S88 execute send Error, wird beendet: {}", msg);
+                  break;
+                }
               }
             }
           }
@@ -317,7 +358,7 @@ impl SRCPServer for S88 {
   /// # Arguments
   /// * rx - Channel Receiver über denn Kommandos empfangen werden
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
-  fn start(&self, rx: Receiver<Message>, tx: Sender<Message>) {
+  fn start(&self, rx: Receiver<Message>, tx: Sender<SRCPMessage>) {
     let instanz = self.clone();
     thread::spawn(move || instanz.execute(rx, tx));
   }

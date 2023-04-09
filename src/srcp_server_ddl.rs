@@ -1,14 +1,23 @@
 use std::{
+  cell::RefCell,
   collections::HashMap,
+  rc::Rc,
   sync::mpsc::{Receiver, Sender},
   thread,
-  time::Duration,
 };
 
-use crate::srcp_server_types::{Message, SRCPServer};
+use log::{error, warn};
+use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 
-#[derive(Clone)]
+use crate::{
+  srcp_devices_ddl::{self, DdlPower, SPI_BAUDRATE_MAERKLIN_LOCO_2},
+  srcp_server_types::{
+    self, Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType, SRCPServer,
+  },
+};
+
 pub struct DDL {
+  //Konfiguration
   //SRCP Busnr
   busnr: usize,
   //SPI Port
@@ -21,8 +30,29 @@ pub struct DDL {
   mfx_enabled_uid: u32,
   //Booster mit On/Off mit "Siggmode" (Impuls auf RTS für On, Impuls auf DTR für Off)
   siggmode: bool,
+  //DSR Booster GO Meldung Invers (bei nicht siggmode)
+  dsr_invers: bool,
   //Verzögerung bis Abschaltung wegen Kurzschluss
-  shortcut_delay: u32,
+  shortcut_delay: u64,
+
+  //Daten, werden nicht geklont
+  //SPI Bus
+  spidev: Option<Spidev>,
+}
+impl Clone for DDL {
+  fn clone(&self) -> DDL {
+    DDL {
+      busnr: self.busnr,
+      spiport: self.spiport.clone(),
+      maerklin_enabled: self.maerklin_enabled,
+      dcc_enabled: self.dcc_enabled,
+      mfx_enabled_uid: self.mfx_enabled_uid,
+      siggmode: self.siggmode,
+      dsr_invers: self.dsr_invers,
+      shortcut_delay: self.shortcut_delay,
+      spidev: None, //Wird nie geklont
+    }
+  }
 }
 
 impl DDL {
@@ -35,18 +65,166 @@ impl DDL {
       dcc_enabled: false,
       mfx_enabled_uid: 0,
       siggmode: false,
+      dsr_invers: false,
       shortcut_delay: 0,
+      spidev: None,
     }
   }
 
-  ///Ausführung als Thread
+  /// Liefert alle unterstützten Devices zurück plus Power Device noch einzel
+  /// # Arguments
+  /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
+  fn get_all_devices(
+    &self, tx: &Sender<SRCPMessage>,
+  ) -> HashMap<
+    srcp_server_types::SRCPMessageDevice,
+    Rc<RefCell<dyn srcp_devices_ddl::SRCPDeviceDDL + '_>>,
+  > {
+    let mut all_devices: HashMap<
+      SRCPMessageDevice,
+      Rc<RefCell<dyn srcp_devices_ddl::SRCPDeviceDDL>>,
+    > = HashMap::new();
+
+    all_devices.insert(
+      SRCPMessageDevice::Power,
+      Rc::new(RefCell::new(DdlPower::new(
+        self.busnr,
+        tx.clone(),
+        self.siggmode,
+        self.dsr_invers,
+        self.shortcut_delay,
+      ))),
+    );
+    all_devices
+  }
+
+  /// Ausführung als Thread
   /// # Arguments
   /// * rx - Channel Receiver über denn Kommandos empfangen werden
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
-  fn execute(&self, _rx: Receiver<Message>, _tx: Sender<Message>) -> ! {
+  fn execute(&mut self, rx: Receiver<Message>, tx: Sender<SRCPMessage>) {
+    //SPI Bus öffnen
+    match Spidev::open(format!("{}.0", self.spiport)) {
+      Ok(mut dev) => {
+        let options = SpidevOptions::new()
+          .bits_per_word(8)
+          .max_speed_hz(SPI_BAUDRATE_MAERKLIN_LOCO_2) //Spielt hier keine Rolle, wird bei jedem Transfer individuell gesetzt
+          .mode(SpiModeFlags::SPI_MODE_1)
+          .build();
+        if let Ok(()) = dev.configure(&options) {
+          self.spidev = Some(dev);
+        } else {
+          error!(
+            "DDL: SPI Device {} konnte nicht konfiguriert werden. Abbruch.",
+            self.spiport
+          );
+          return;
+        }
+      }
+      Err(msg) => {
+        error!(
+          "DDL: SPI Device {} konnte nicht geöffnet werden. Abbruch. {}",
+          self.spiport, msg
+        );
+        return;
+      }
+    }
+    //Warteschlange für alles ausser Power
+    let mut queue: Vec<SRCPMessage> = Vec::new();
+
+    //Alle unterstützten Devices
+    let all_devices = self.get_all_devices(&tx);
+    //Welches Device ist aktuell im Refresh Zyklus
     loop {
-      //TODO
-      thread::sleep(Duration::from_secs(1));
+      //Immer alle ankommenden Kommandos auslesen
+      loop {
+        if let Ok(msg) = rx.try_recv() {
+          match msg {
+            Message::NewInfoClient { session_id } => {
+              //Alle Devices müssen alle Zustände an neuen Info Client senden
+              for (_key, device) in &all_devices {
+                device.borrow().send_all_info(Some(session_id));
+              }
+            }
+            Message::SRCPMessage { srcp_message } => {
+              if let SRCPMessageID::Command { msg_type } = srcp_message.message_id {
+                match &all_devices.get(&srcp_message.device) {
+                  //Nur Kommandomessages können (oder sollen) hier ankommen
+                  Some(device) => {
+                    if device.borrow().validate_cmd(&srcp_message) {
+                      //SET Kommandos (ausser für Power Device) kommen in die Warteschlange da sie
+                      //1. nur bei Power On ausgegeben werden
+                      //2. Lok Kommandos für die selbe Lok überholen sich, sprich wenn ein neues empfangen wurde ist
+                      //   ein altes, noch nicht ausgegebenes, für diese Lok immer hinfällig
+                      if (srcp_message.device == SRCPMessageDevice::Power)
+                        || (msg_type != SRCPMessageType::SET)
+                      {
+                        device.try_borrow_mut().unwrap().execute_cmd(&srcp_message);
+                      } else {
+                        //Wenn es ein Lokkommando ist, dann sind alte Kommando für dieselbe Lok hinfällig
+                        if srcp_message.device == SRCPMessageDevice::GL {
+                          let adr = srcp_message.get_adr();
+                          for i in 0..queue.len() {
+                            let queue_msg = &queue[i];
+                            if (queue_msg.device == SRCPMessageDevice::GL)
+                              && (queue_msg.get_adr() == adr)
+                            {
+                              queue.remove(i);
+                              //Wir können hier aufhören, es kann nur einen alten Eintrag gegeben haben
+                              break;
+                            }
+                          }
+                        }
+                        //In Warteschlange
+                        queue.push(srcp_message);
+                      }
+                    }
+                  }
+                  None => {
+                    tx.send(SRCPMessage::new_err(
+                      &srcp_message,
+                      "421",
+                      "unsupported device",
+                    ))
+                    .unwrap();
+                  }
+                }
+              } else {
+                warn!("DDL Empfang ignoriert: {}", srcp_message.to_string());
+              }
+            }
+          }
+        } else {
+          break;
+        }
+      }
+      //Wenn Power eingeschaltet ist, dann wird die Queue abgearbeitet
+      //Power Device muss vorhanden sein, is_dev_spezifisch() liefert den Power Zustand
+      if all_devices[&SRCPMessageDevice::Power]
+        .borrow()
+        .is_dev_spezifisch()
+      {
+        if queue.is_empty() {
+          //Nicht zu tun -> Refresh für GL wenn vorhanden
+          if let Some(dev) = all_devices.get(&SRCPMessageDevice::GL) {
+            dev.try_borrow_mut().unwrap().send_refresh();
+          }
+        } else {
+          //Alles was in Warteschlange ist ist gültig, Device vorhanden und validiert
+          //Erstes, ältestes Kommando ausführen
+          let msg = queue.remove(0);
+          all_devices
+            .get(&msg.device)
+            .unwrap()
+            .try_borrow_mut()
+            .unwrap()
+            .execute_cmd(&msg);
+        }
+      }
+      //Allen Device die Change geben Hintergrundaugaben abzuarbeiten
+      for (_, dev) in &all_devices {
+        dev.borrow_mut().execute();
+      }
     }
   }
 }
@@ -90,12 +268,13 @@ impl SRCPServer for DDL {
         .ok_or("MFX UID muss eine Zahl > 0 sein")?;
     }
     self.siggmode = config_file_bus.get("siggmode").is_some();
+    self.dsr_invers = config_file_bus.get("dsr_invers").is_some();
     self.shortcut_delay = config_file_bus
       .get("shortcut_delay")
       .ok_or("DDL: shortcut_delay Parameter nicht vorhanden")?
       .as_ref()
       .ok_or("DDL: shortcut_delay Parameter ohne Wert")?
-      .parse::<u32>()
+      .parse::<u64>()
       .ok()
       .ok_or("DDL: shortcut_delay Parameter muss eine Zahl >= 0 sein")?;
     Ok(())
@@ -105,8 +284,8 @@ impl SRCPServer for DDL {
   /// # Arguments
   /// * rx - Channel Receiver über denn Kommandos empfangen werden
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
-  fn start(&self, rx: Receiver<Message>, tx: Sender<Message>) {
-    let instanz = self.clone();
+  fn start(&self, rx: Receiver<Message>, tx: Sender<SRCPMessage>) {
+    let mut instanz = self.clone();
     thread::spawn(move || instanz.execute(rx, tx));
   }
 }
