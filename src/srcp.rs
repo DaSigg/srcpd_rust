@@ -333,9 +333,13 @@ fn srcp_server(port: u16, _watchdog: bool, all_cmd_tx: &HashMap<usize, Sender<Me
     //Alle Sender müssen geklont werden damit sie im anderen Thread verwendet werden können
     let all_cmd_tx_kopie = all_cmd_tx.clone();
     //Neuer Thread für diesen Client starten
-    thread::spawn(move || {
-      handle_srcp_connection(&client_stream, session_id, all_cmd_tx_kopie);
-    });
+    thread::Builder::new()
+      .name(format!(
+        "SRCP_Client_Thread Session={} Client={}",
+        session_id, addr
+      ))
+      .spawn(move || handle_srcp_connection(&client_stream, session_id, all_cmd_tx_kopie))
+      .unwrap();
   }
 }
 
@@ -425,9 +429,12 @@ pub fn startup(
   //Info Message Dispacther Thread starten
   //Alle Infos Messages der verschiedenen srcp_server_ Instanzen werden von diesem Thread an alle angemeldeten
   //Clients mit Info Mode gesendet
-  thread::spawn(move || {
-    dispachter_srcp_info(info_rx);
-  });
+  thread::Builder::new()
+    .name("Dispatcher".to_string())
+    .spawn(move || {
+      dispachter_srcp_info(info_rx);
+    })
+    .unwrap();
 
   //Hier geht es weiter mit als Hauptthread der auf eingehende Verbindungen wartet
   //und die Verbindung zwischen den für die Verbindungen gestarteten SRCP Servern und den Bus-Servern herstellt

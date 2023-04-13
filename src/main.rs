@@ -19,6 +19,10 @@ use crate::{srcp_server_ddl::DDL, srcp_server_s88::S88, srcp_server_types::Messa
 
 mod srcp;
 mod srcp_devices_ddl;
+mod srcp_devices_ddl_ga;
+mod srcp_devices_ddl_power;
+mod srcp_protocol_ddl;
+mod srcp_protocol_ddl_mm;
 mod srcp_server_ddl;
 mod srcp_server_s88;
 mod srcp_server_types;

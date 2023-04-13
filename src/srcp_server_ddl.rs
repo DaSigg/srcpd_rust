@@ -10,11 +10,15 @@ use log::{error, warn};
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 
 use crate::{
-  srcp_devices_ddl::{self, DdlPower, SPI_BAUDRATE_MAERKLIN_LOCO_2},
+  srcp_devices_ddl::{self},
+  srcp_protocol_ddl::{HashMapProtokollVersion, HashMapVersion},
+  srcp_protocol_ddl_mm::{MMProtokoll, MmVersion},
   srcp_server_types::{
     self, Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType, SRCPServer,
   },
 };
+use crate::{srcp_devices_ddl_ga::DdlGA, srcp_protocol_ddl_mm::SPI_BAUDRATE_MAERKLIN_LOCO_2};
+use crate::{srcp_devices_ddl_power::DdlPower, srcp_protocol_ddl::DdlProtokolle};
 
 pub struct DDL {
   //Konfiguration
@@ -71,7 +75,26 @@ impl DDL {
     }
   }
 
-  /// Liefert alle unterstützten Devices zurück plus Power Device noch einzel
+  /// Liefert alle vorhandenen Protokollimplementierungen in allen Versionen zurück.
+  /// Keys: Protokoll - Version
+  /// Wenn zu einem Protokoll keine Versionsangabe vorhanden ist, dann wird 0 verwendet.
+  fn get_all_protocols(&self) -> HashMapProtokollVersion {
+    let mut all_protocols: HashMapProtokollVersion = HashMap::new();
+    if self.maerklin_enabled {
+      //MM
+      let mut mm_protocols: HashMapVersion = HashMap::new();
+      //MM V1
+      mm_protocols.insert("1", Rc::new(RefCell::new(MMProtokoll::from(MmVersion::V1))));
+      //MM V2
+      mm_protocols.insert("2", Rc::new(RefCell::new(MMProtokoll::from(MmVersion::V2))));
+      //MM V3
+      mm_protocols.insert("3", Rc::new(RefCell::new(MMProtokoll::from(MmVersion::V3))));
+      all_protocols.insert(DdlProtokolle::Maerklin, mm_protocols);
+    }
+    all_protocols
+  }
+
+  /// Liefert alle unterstützten Devices zurück
   /// # Arguments
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
   fn get_all_devices(
@@ -80,11 +103,13 @@ impl DDL {
     srcp_server_types::SRCPMessageDevice,
     Rc<RefCell<dyn srcp_devices_ddl::SRCPDeviceDDL + '_>>,
   > {
+    let all_protokolle = self.get_all_protocols();
     let mut all_devices: HashMap<
       SRCPMessageDevice,
       Rc<RefCell<dyn srcp_devices_ddl::SRCPDeviceDDL>>,
     > = HashMap::new();
 
+    //Power Device
     all_devices.insert(
       SRCPMessageDevice::Power,
       Rc::new(RefCell::new(DdlPower::new(
@@ -93,6 +118,16 @@ impl DDL {
         self.siggmode,
         self.dsr_invers,
         self.shortcut_delay,
+      ))),
+    );
+    //GA Device
+    all_devices.insert(
+      SRCPMessageDevice::GA,
+      Rc::new(RefCell::new(DdlGA::new(
+        self.busnr,
+        tx.clone(),
+        &self.spidev,
+        all_protokolle,
       ))),
     );
     all_devices
@@ -161,7 +196,7 @@ impl DDL {
                       {
                         device.try_borrow_mut().unwrap().execute_cmd(&srcp_message);
                       } else {
-                        //Wenn es ein Lokkommando ist, dann sind alte Kommando für dieselbe Lok hinfällig
+                        //Wenn es ein Lokkommando ist, dann ist altes Kommando für dieselbe Lok hinfällig
                         if srcp_message.device == SRCPMessageDevice::GL {
                           let adr = srcp_message.get_adr();
                           for i in 0..queue.len() {
@@ -210,7 +245,7 @@ impl DDL {
             dev.try_borrow_mut().unwrap().send_refresh();
           }
         } else {
-          //Alles was in Warteschlange ist ist gültig, Device vorhanden und validiert
+          //Alles was in Warteschlange ist, ist gültig, Device vorhanden und validiert
           //Erstes, ältestes Kommando ausführen
           let msg = queue.remove(0);
           all_devices
@@ -286,6 +321,9 @@ impl SRCPServer for DDL {
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
   fn start(&self, rx: Receiver<Message>, tx: Sender<SRCPMessage>) {
     let mut instanz = self.clone();
-    thread::spawn(move || instanz.execute(rx, tx));
+    thread::Builder::new()
+      .name("DDL_Thread".to_string())
+      .spawn(move || instanz.execute(rx, tx))
+      .unwrap();
   }
 }

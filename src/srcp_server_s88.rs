@@ -360,6 +360,9 @@ impl SRCPServer for S88 {
   /// * tx - Channel Sender über den Info Messages zurück gesendet werden können
   fn start(&self, rx: Receiver<Message>, tx: Sender<SRCPMessage>) {
     let instanz = self.clone();
-    thread::spawn(move || instanz.execute(rx, tx));
+    thread::Builder::new()
+      .name("S88_Thread".to_string())
+      .spawn(move || instanz.execute(rx, tx))
+      .unwrap();
   }
 }
