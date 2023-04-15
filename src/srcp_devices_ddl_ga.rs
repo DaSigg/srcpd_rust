@@ -172,7 +172,7 @@ impl DdlGA<'_> {
 impl SRCPDeviceDDL for DdlGA<'_> {
   /// Empfangenes Kommando validieren
   /// Return true wenn Ok.
-  /// Sendet die Antwort Message (Ok / Err) und wenn notwendig neue Zustände über Info Sender zurück.
+  /// Sendet die Antwort Message (Ok / Err) an Sender zurück.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
   fn validate_cmd(&self, cmd_msg: &SRCPMessage) -> bool {
@@ -192,6 +192,8 @@ impl SRCPDeviceDDL for DdlGA<'_> {
                 //Adressprüfung
                 if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
                   if adr <= prot_impl.borrow_mut().get_gl_max_adr() {
+                    //OK an diese Session
+                    self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
                     result = true;
                   } else {
                     self
@@ -245,6 +247,8 @@ impl SRCPDeviceDDL for DdlGA<'_> {
             if (cmd_msg.parameter[2] == "0" || cmd_msg.parameter[2] == "1")
               && cmd_msg.parameter[3].parse::<i16>().is_ok()
             {
+              //OK an diese Session
+              self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
               result = true;
             } else {
               self
@@ -278,7 +282,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         self
           .tx
           .send(SRCPMessage::new(
-            cmd_msg.session_id,
+            None,
             cmd_msg.bus,
             SRCPMessageID::Info {
               info_code: "100".to_string(),

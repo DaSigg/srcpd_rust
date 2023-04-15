@@ -206,7 +206,7 @@ impl DdlGL<'_> {
 impl SRCPDeviceDDL for DdlGL<'_> {
   /// Empfangenes Kommando validieren
   /// Return true wenn Ok.
-  /// Sendet die Antwort Message (Ok / Err) und wenn notwendig neue Zustände über Info Sender zurück.
+  /// Sendet die Antwort Message (Ok / Err) an Sender zurück.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
   fn validate_cmd(&self, cmd_msg: &SRCPMessage) -> bool {
@@ -240,6 +240,9 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                             .unwrap();
                           break;
                         }
+                      }
+                      if result {
+                        self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
                       }
                     } else {
                       self
@@ -311,13 +314,16 @@ impl SRCPDeviceDDL for DdlGL<'_> {
               if cmd_msg.parameter.len() > 4 {
                 for i in 4..cmd_msg.parameter.len() {
                   if (cmd_msg.parameter[i] != "0") && (cmd_msg.parameter[i] != "1") {
-                    result = true;
+                    result = false;
                     self
                       .tx
                       .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
                       .unwrap();
                   }
                 }
+              }
+              if result {
+                self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
               }
             } else {
               self
@@ -368,7 +374,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
         self
           .tx
           .send(SRCPMessage::new(
-            cmd_msg.session_id,
+            None,
             cmd_msg.bus,
             SRCPMessageID::Info {
               info_code: "100".to_string(),
@@ -377,6 +383,8 @@ impl SRCPDeviceDDL for DdlGL<'_> {
             cmd_msg.parameter.clone(),
           ))
           .unwrap();
+        //OK an diese Session
+        self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
         //Das hier verwendete Protokoll ist nicht mehr Idle
         let index_used_prot = self
           .all_idle_protokolle
@@ -407,6 +415,8 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           }
         }
         self.send_gl(adr, drivemode, v, v_max, funktionen, false);
+        //OK an diese Session
+        self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
       }
     };
   }

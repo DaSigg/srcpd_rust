@@ -6,7 +6,7 @@ use crate::{srcp_protocol_ddl::DdlTel, srcp_server_types::SRCPMessage};
 pub trait SRCPDeviceDDL {
   /// Empfangenes Kommando validieren.
   /// Return true wenn Kommando Ok.
-  /// Sendet die Antwort Message (Ok / Err) und wenn notwendig neue Zustände über Info Sender zurück.
+  /// Sendet die Antwort Message (Ok / Err) an Sender zurück.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
   fn validate_cmd(&self, cmd_msg: &SRCPMessage) -> bool;
