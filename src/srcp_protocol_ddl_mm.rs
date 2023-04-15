@@ -262,6 +262,9 @@ impl MMProtokoll {
     }
     self.old_drive_mode[adr] = drive_mode_used;
     self.old_speed[adr] = speed_used;
+    //und noch F0 übernehmen
+    self.old_funktionen[adr] &= !1; //F0 löschen
+    self.old_funktionen[adr] |= funktionen & 1; //und neu übernehmen löschen
     ddl_tel
   }
 
@@ -313,7 +316,7 @@ impl DdlProtokoll for MMProtokoll {
   /// * adr - Adresse der Lok
   /// * drive_mode - Fahrtrichtung / Nothalt
   /// * speed - aktuelle Geschwindigkeit
-  /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis"
+  /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis". Es wedren hier nur diese Funktionen übernommen!
   fn get_gl_basis_tel(
     &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, funktionen: u64,
   ) -> DdlTel {
@@ -327,11 +330,9 @@ impl DdlProtokoll for MMProtokoll {
   /// Liefert None, wenn kein Zusatztelegramm vorhanden ist. Das ist bei MM1 immer der Fall.
   /// # Arguments
   /// * adr - Adresse der Lok
-  /// * nur_wechsel - Wenn true werden nur Telegramme für Funktionen, die geändert haben, erzeugt
+  /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis"
-  fn get_gl_zusatz_tel(
-    &mut self, adr: usize, nur_wechsel: bool, funktionen: u64,
-  ) -> Option<DdlTel> {
+  fn get_gl_zusatz_tel(&mut self, adr: usize, refresh: bool, funktionen: u64) -> Option<DdlTel> {
     if self.version == MmVersion::V1 {
       return None;
     }
@@ -347,7 +348,7 @@ impl DdlProtokoll for MMProtokoll {
         funktionen,
       );
       let mask: u64 = 1 << i;
-      if (((self.old_funktionen[adr] ^ funktionen) & mask) != 0) || (!nur_wechsel) {
+      if (((self.old_funktionen[adr] ^ funktionen) & mask) != 0) || refresh {
         //Veränderung oder immer verlangt
         let mut fx_bits = MM_F1_4[i - 1];
         //Zustand der Funktion ergänzen
@@ -397,5 +398,20 @@ impl DdlProtokoll for MMProtokoll {
     self.complete_mm_paket(&mut ddl_tel);
     //Und versenden
     ddl_tel
+  }
+
+  /// Liefert das Idle Telegramm dieses Protokolles
+  fn get_idle_tel(&self) -> DdlTel {
+    //Idle Telegramm MM ist Telegramm an nie verwendete Lok Adresse 80 (GL Adresse 80 wird als eigentliche Adr 0 ausgegeben)
+    let mut ddl_idle_tel = DdlTel::new(SPI_BAUDRATE_MAERKLIN_LOCO_2, MM_LEN);
+    //Adr 80 ist 4 * "O" Trit
+    ddl_idle_tel.daten.extend_from_slice(MM_BIT_O);
+    ddl_idle_tel.daten.extend_from_slice(MM_BIT_O);
+    ddl_idle_tel.daten.extend_from_slice(MM_BIT_O);
+    ddl_idle_tel.daten.extend_from_slice(MM_BIT_O);
+    //Dann Funktion L, Speed 0
+    self.add_mm1_fnkt_value(&mut ddl_idle_tel, false, 0);
+    self.complete_mm_paket(&mut ddl_idle_tel);
+    ddl_idle_tel
   }
 }

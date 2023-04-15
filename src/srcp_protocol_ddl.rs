@@ -106,6 +106,16 @@ impl GLDriveMode {
     }
   }
 }
+impl ToString for GLDriveMode {
+  fn to_string(&self) -> String {
+    match self {
+      GLDriveMode::Rueckwaerts => "0",
+      GLDriveMode::Vorwaerts => "1",
+      GLDriveMode::Nothalt => "2",
+    }
+    .to_string()
+  }
+}
 
 /// Schnittstelle für alle Protokolle
 /// Wenn mehrere Versionen eines Protokolles vorhanden sind, dann muss dies bei
@@ -123,7 +133,7 @@ pub trait DdlProtokoll {
   fn get_gl_anz_f_basis(&self) -> usize;
   /// Erzeugt das Basis Telegramm für GL.
   /// - Fahren
-  /// - Basisfunktionen F0 bis "get_Anz_F_Basis"
+  /// - Basisfunktionen F0 bis "get_Anz_F_Basis". Es wedren hier nur diese Funktionen übernommen!
   /// # Arguments
   /// * adr - Adresse der Lok
   /// * drive_mode - Fahrtrichtung / Nothalt
@@ -137,16 +147,17 @@ pub trait DdlProtokoll {
   /// Liefert None, wenn kein Zusatztelegramm vorhanden ist.
   /// # Arguments
   /// * adr - Adresse der Lok
-  /// * nur_wechsel - Wenn true werden nur Telegramme für Funktionen, die geändert haben, erzeugt
+  /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis"
-  fn get_gl_zusatz_tel(&mut self, adr: usize, nur_wechsel: bool, funktionen: u64)
-    -> Option<DdlTel>;
+  fn get_gl_zusatz_tel(&mut self, adr: usize, refresh: bool, funktionen: u64) -> Option<DdlTel>;
   /// Erzeugt ein GA Telegramm
   /// # Arguments
   /// * adr - Adresse des Schaltdekoders
   /// * port - Port auf dem Schaltdekoder
   /// * value - Gewünschter Zustand des Port Ein/Aus
   fn get_ga_tel(&self, adr: usize, port: usize, value: bool) -> DdlTel;
+  /// Liefert das Idle Telegramm dieses Protokolles
+  fn get_idle_tel(&self) -> DdlTel;
 }
 
 /// Typen zu Verwaltung der Protokolle

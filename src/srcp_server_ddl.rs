@@ -11,6 +11,7 @@ use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 
 use crate::{
   srcp_devices_ddl::{self},
+  srcp_devices_ddl_gl::DdlGL,
   srcp_protocol_ddl::{HashMapProtokollVersion, HashMapVersion},
   srcp_protocol_ddl_mm::{MMProtokoll, MmVersion},
   srcp_server_types::{
@@ -127,7 +128,17 @@ impl DDL {
         self.busnr,
         tx.clone(),
         &self.spidev,
-        all_protokolle,
+        all_protokolle.clone(),
+      ))),
+    );
+    //GL Device
+    all_devices.insert(
+      SRCPMessageDevice::GL,
+      Rc::new(RefCell::new(DdlGL::new(
+        self.busnr,
+        tx.clone(),
+        &self.spidev,
+        all_protokolle.clone(),
       ))),
     );
     all_devices

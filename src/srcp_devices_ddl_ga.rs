@@ -100,6 +100,11 @@ impl DdlGA<'_> {
               .send(SRCPMessage::new_err(cmd_msg, "416", "no data"))
               .unwrap();
           }
+        } else {
+          self
+            .tx
+            .send(SRCPMessage::new_err(cmd_msg, "416", "no data"))
+            .unwrap();
         }
       } else {
         self
@@ -146,7 +151,7 @@ impl DdlGA<'_> {
       .unwrap();
   }
 
-  /// GA Port Ausgane senden und Zustand speichern
+  /// GA Port Ausgänge senden und Zustand speichern
   /// # Arguments
   /// * adr - GA Adresse
   /// * port - GA Port
@@ -156,12 +161,8 @@ impl DdlGA<'_> {
     self.all_ga.get_mut(&adr).unwrap().value[port] = value;
     let protokoll = self.all_ga[&adr].protokoll;
     //Zum Booster Versenden, erstes passendes Protokoll verwenden, keine Versionsangabe für GA
-    let protokoll = self.all_protokolle.get(&protokoll).unwrap().values().next();
-    let ddl_tel = protokoll
-      .as_ref()
-      .unwrap()
-      .borrow()
-      .get_ga_tel(adr, port, value);
+    let protokoll = self.all_protokolle[&protokoll].values().next().unwrap();
+    let ddl_tel = protokoll.borrow_mut().get_ga_tel(adr, port, value);
     self.send(self.spidev, &ddl_tel);
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr, port, value);
@@ -245,6 +246,11 @@ impl SRCPDeviceDDL for DdlGA<'_> {
               && cmd_msg.parameter[3].parse::<i16>().is_ok()
             {
               result = true;
+            } else {
+              self
+                .tx
+                .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+                .unwrap();
             }
           }
         }

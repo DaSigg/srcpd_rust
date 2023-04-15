@@ -16,7 +16,7 @@ pub trait SRCPDeviceDDL {
   /// * cmd_msg - Empfangenes Kommando
   fn execute_cmd(&mut self, cmd_msg: &SRCPMessage);
   /// Refresh Zyklus Telegramm senden (wird nur für GL aufgerufen)
-  fn send_refresh(&self) {}
+  fn send_refresh(&mut self) {}
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
   fn execute(&mut self) {}
