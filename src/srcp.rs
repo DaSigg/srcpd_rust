@@ -311,9 +311,8 @@ fn handle_srcp_connection(
 /// einen Rx und Tx Thread startet
 /// # Arguments
 /// * port - TCP Port auf dem der Server gestartet werden soll
-/// * watchdog - true: Watchdog aktiv -> automatische Ausschalting Power wenn zu lange kein neuer Befehl empfangen wird.
 /// * all_cmd_tx - Alle Channel Sender für Kommandos zu den SRCP Servern. Key ist die Busnummer.
-fn srcp_server(port: u16, _watchdog: bool, all_cmd_tx: &HashMap<usize, Sender<Message>>) -> ! {
+fn srcp_server(port: u16, all_cmd_tx: &HashMap<usize, Sender<Message>>) -> ! {
   //TODO watchdog
   let server_adr = format!("0.0.0.0:{}", port);
   info!("Start SRCP Server: {}", server_adr);
@@ -418,14 +417,8 @@ pub fn startup(
     .parse::<u16>()
     .ok()
     .ok_or("[srcp] port muss eine Zahl sein")?;
-  //Wenn wir bis hierhingekommen sind, dann gibt es den [srcp] Abschnitt auf jeden Fall
-  let watchdog = config_file_values
-    .get("srcp")
-    .expect("Keine [srcp] Abschnitt in Konfiguration")
-    .get("watchdog")
-    .is_some();
-  info!("srcp start port={port} watchdog={watchdog}");
 
+  info!("srcp start port={port}");
   //Info Message Dispacther Thread starten
   //Alle Infos Messages der verschiedenen srcp_server_ Instanzen werden von diesem Thread an alle angemeldeten
   //Clients mit Info Mode gesendet
@@ -438,5 +431,5 @@ pub fn startup(
 
   //Hier geht es weiter mit als Hauptthread der auf eingehende Verbindungen wartet
   //und die Verbindung zwischen den für die Verbindungen gestarteten SRCP Servern und den Bus-Servern herstellt
-  srcp_server(port, watchdog, all_cmd_tx);
+  srcp_server(port, all_cmd_tx);
 }

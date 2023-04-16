@@ -4,6 +4,7 @@ use std::{
   rc::Rc,
   sync::mpsc::{Receiver, Sender},
   thread,
+  time::{Duration, Instant},
 };
 
 use log::{error, warn};
@@ -20,6 +21,9 @@ use crate::{
 };
 use crate::{srcp_devices_ddl_ga::DdlGA, srcp_protocol_ddl_mm::SPI_BAUDRATE_MAERKLIN_LOCO_2};
 use crate::{srcp_devices_ddl_power::DdlPower, srcp_protocol_ddl::DdlProtokolle};
+
+/// Watchdog Timeout für Power Off
+const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct DDL {
   //Konfiguration
@@ -39,6 +43,8 @@ pub struct DDL {
   dsr_invers: bool,
   //Verzögerung bis Abschaltung wegen Kurzschluss
   shortcut_delay: u64,
+  //Watchdog aktiviert, automatische Power Ausschaltung wenn 2s lang keine Kommando empfangen wurde
+  watchdog: bool,
 
   //Daten, werden nicht geklont
   //SPI Bus
@@ -55,6 +61,7 @@ impl Clone for DDL {
       siggmode: self.siggmode,
       dsr_invers: self.dsr_invers,
       shortcut_delay: self.shortcut_delay,
+      watchdog: self.watchdog,
       spidev: None, //Wird nie geklont
     }
   }
@@ -72,6 +79,7 @@ impl DDL {
       siggmode: false,
       dsr_invers: false,
       shortcut_delay: 0,
+      watchdog: false,
       spidev: None,
     }
   }
@@ -175,8 +183,10 @@ impl DDL {
         return;
       }
     }
-    //Warteschlange für alles ausser Power
+    //Warteschlange für alle SET ausser Power
     let mut queue: Vec<SRCPMessage> = Vec::new();
+    //Zeitpunkt letztes empfangenes Kommando für Watchdog Überwachung
+    let mut instant_kommando = Instant::now();
 
     //Alle unterstützten Devices
     let all_devices = self.get_all_devices(&tx);
@@ -194,6 +204,7 @@ impl DDL {
             }
             Message::SRCPMessage { srcp_message } => {
               if let SRCPMessageID::Command { msg_type } = srcp_message.message_id {
+                instant_kommando = Instant::now();
                 match &all_devices.get(&srcp_message.device) {
                   //Nur Kommandomessages können (oder sollen) hier ankommen
                   Some(device) => {
@@ -250,24 +261,40 @@ impl DDL {
         .borrow()
         .is_dev_spezifisch()
       {
-        if queue.is_empty() {
-          //Nicht zu tun -> Refresh für GL wenn vorhanden
-          if let Some(dev) = all_devices.get(&SRCPMessageDevice::GL) {
-            dev.try_borrow_mut().unwrap().send_refresh();
-          }
+        //Wenn Watchdog verlangt ist, dann machen wir hier noch dessen Kontrolle und Power off, wenn abgelaufen
+        if self.watchdog && (Instant::now() > (instant_kommando + WATCHDOG_TIMEOUT)) {
+          //Ausschaltkommando, Session ID 0 = srcp Server selbst
+          all_devices[&SRCPMessageDevice::Power]
+            .borrow_mut()
+            .execute_cmd(&SRCPMessage::new(
+              Some(0),
+              self.busnr,
+              SRCPMessageID::Command {
+                msg_type: (SRCPMessageType::SET),
+              },
+              SRCPMessageDevice::Power,
+              vec!["OFF".to_string()],
+            ));
         } else {
-          //Alles was in Warteschlange ist, ist gültig, Device vorhanden und validiert
-          //Erstes, ältestes Kommando ausführen
-          let msg = queue.remove(0);
-          all_devices
-            .get(&msg.device)
-            .unwrap()
-            .try_borrow_mut()
-            .unwrap()
-            .execute_cmd(&msg);
+          if queue.is_empty() {
+            //Nicht zu tun -> Refresh für GL wenn vorhanden
+            if let Some(dev) = all_devices.get(&SRCPMessageDevice::GL) {
+              dev.try_borrow_mut().unwrap().send_refresh();
+            }
+          } else {
+            //Alles was in Warteschlange ist, ist gültig, Device vorhanden und validiert
+            //Erstes, ältestes Kommando ausführen
+            let msg = queue.remove(0);
+            all_devices
+              .get(&msg.device)
+              .unwrap()
+              .try_borrow_mut()
+              .unwrap()
+              .execute_cmd(&msg);
+          }
         }
       }
-      //Allen Device die Change geben Hintergrundaugaben abzuarbeiten
+      //Allen Devices die Möglichkeit geben Hintergrundaufgaben abzuarbeiten
       for (_, dev) in &all_devices {
         dev.borrow_mut().execute();
       }
@@ -323,6 +350,7 @@ impl SRCPServer for DDL {
       .parse::<u64>()
       .ok()
       .ok_or("DDL: shortcut_delay Parameter muss eine Zahl >= 0 sein")?;
+    self.watchdog = config_file_bus.get("watchdog").is_some();
     Ok(())
   }
 
