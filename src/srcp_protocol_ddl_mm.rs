@@ -36,7 +36,8 @@ static MM_BIT_L: &'static [u8] = &[MM_BIT_0_0, MM_BIT_0_1, MM_BIT_0_0, MM_BIT_0_
 static MM_BIT_H: &'static [u8] = &[MM_BIT_1_0, MM_BIT_1_1, MM_BIT_1_0, MM_BIT_1_1]; //11
 static MM_BIT_O: &'static [u8] = &[MM_BIT_1_0, MM_BIT_1_1, MM_BIT_0_0, MM_BIT_0_1]; //10
 static MM_BIT_U: &'static [u8] = &[MM_BIT_0_0, MM_BIT_0_1, MM_BIT_1_0, MM_BIT_1_1]; //01
-                                                                                    // MM2 & 3 Bitmuster für F1-4, letztes Bit 3 ist jeweils der Zustand der Funktion
+
+// MM2 & 3 Bitmuster für F1-4, Bit 3 ist jeweils der Zustand der Funktion
 static MM_F1_4: &'static [u8] = &[0b0011, 0b0100, 0b0110, 0b0111];
 
 //Max. erlaubte Dekoder Adresse (GA und GL)
@@ -57,7 +58,7 @@ pub struct MMProtokoll {
   old_drive_mode: [GLDriveMode; MAX_MM_ADRESSE + 1],
   /// Erkennung Funktionswechsel bei M2 & 3
   old_funktionen: [u64; MAX_MM_ADRESSE + 1],
-  /// Speicherung Speed um F1-F4 Pakete für MM2 & 3, die auch den Speed enthalten, kkorrekt erzeugen zu können
+  /// Speicherung Speed um F1-F4 Pakete für MM2 & 3, die auch den Speed enthalten, korrekt erzeugen zu können
   old_speed: [usize; MAX_MM_ADRESSE + 1],
 }
 impl MMProtokoll {
@@ -316,9 +317,12 @@ impl DdlProtokoll for MMProtokoll {
   /// * adr - Adresse der Lok
   /// * drive_mode - Fahrtrichtung / Nothalt
   /// * speed - aktuelle Geschwindigkeit
+  /// * speed_steps - Anzahl Speed Steps die verwendet werden soll.
+  ///                 Wir hier ignoriert, da von der Version abhängig (V1 & 2: 14, V3: 28)
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis". Es wedren hier nur diese Funktionen übernommen!
   fn get_gl_basis_tel(
-    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, funktionen: u64,
+    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, _speed_steps: usize,
+    funktionen: u64,
   ) -> DdlTel {
     let mut ddl_tel = self.get_gl_basis_tel_raw(adr, drive_mode, speed, funktionen);
     self.complete_mm_paket(&mut ddl_tel);
@@ -409,7 +413,7 @@ impl DdlProtokoll for MMProtokoll {
     ddl_idle_tel.daten.extend_from_slice(MM_BIT_O);
     ddl_idle_tel.daten.extend_from_slice(MM_BIT_O);
     ddl_idle_tel.daten.extend_from_slice(MM_BIT_O);
-    //Dann Funktion L, Speed 0
+    //Dann Funktion Off, Speed 0
     self.add_mm1_fnkt_value(&mut ddl_idle_tel, false, 0);
     self.complete_mm_paket(&mut ddl_idle_tel);
     ddl_idle_tel

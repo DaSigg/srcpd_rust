@@ -23,6 +23,7 @@ mod srcp_devices_ddl_ga;
 mod srcp_devices_ddl_gl;
 mod srcp_devices_ddl_power;
 mod srcp_protocol_ddl;
+mod srcp_protocol_ddl_dcc;
 mod srcp_protocol_ddl_mm;
 mod srcp_server_ddl;
 mod srcp_server_s88;

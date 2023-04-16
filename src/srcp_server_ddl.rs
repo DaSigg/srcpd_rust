@@ -14,6 +14,7 @@ use crate::{
   srcp_devices_ddl::{self},
   srcp_devices_ddl_gl::DdlGL,
   srcp_protocol_ddl::{HashMapProtokollVersion, HashMapVersion},
+  srcp_protocol_ddl_dcc::{DccProtokoll, DccVersion},
   srcp_protocol_ddl_mm::{MMProtokoll, MmVersion},
   srcp_server_types::{
     self, Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType, SRCPServer,
@@ -99,6 +100,19 @@ impl DDL {
       //MM V3
       mm_protocols.insert("3", Rc::new(RefCell::new(MMProtokoll::from(MmVersion::V3))));
       all_protocols.insert(DdlProtokolle::Maerklin, mm_protocols);
+      //DCC
+      let mut dcc_protocols: HashMapVersion = HashMap::new();
+      //DCC V1
+      dcc_protocols.insert(
+        "1",
+        Rc::new(RefCell::new(DccProtokoll::from(DccVersion::V1))),
+      );
+      //DCC V2
+      dcc_protocols.insert(
+        "2",
+        Rc::new(RefCell::new(DccProtokoll::from(DccVersion::V2))),
+      );
+      all_protocols.insert(DdlProtokolle::Dcc, dcc_protocols);
     }
     all_protocols
   }

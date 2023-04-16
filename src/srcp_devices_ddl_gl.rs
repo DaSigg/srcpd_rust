@@ -194,7 +194,13 @@ impl DdlGL<'_> {
       .unwrap()
       .borrow_mut();
     //Basis GL Telegram erzeugen und zum Booster Versenden
-    let ddl_tel = protokoll.get_gl_basis_tel(adr, gl.direction, gl.speed, gl.fnkt);
+    let ddl_tel = protokoll.get_gl_basis_tel(
+      adr,
+      gl.direction,
+      gl.speed,
+      gl.protokoll_speedsteps,
+      gl.fnkt,
+    );
     self.send(self.spidev, &ddl_tel);
     //Zusatztelegramm mit weiteren Fx wenn sich diese verändert haben
     if let Some(ddl_tel) = protokoll.get_gl_zusatz_tel(adr, refresh, gl.fnkt) {

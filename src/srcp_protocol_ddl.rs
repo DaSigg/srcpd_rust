@@ -1,16 +1,5 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-//SPI Baudrate für DCC/NMRA.
-//Diese wird so gewählt, dass ein kurzer 58/58us Impuls (logisch 1) in einem Byte (0xF0) ausgegeben werden kann,
-//ein langer 116/116us Impuls wird dann als 2 Bytes (0xFF, 0x00) ausgegeben.
-//Damit hätten wird für 8 Bit also 116us -> 1 Bit 14.5us -> 68966 Baud.
-//Damit werden NMRA/DCC Pakete inkl. der führenden Sync. Bytes leider nicht immer >= 96 Bytes -> DMA Mode und keine Pause nach 8 Bits
-const _SPI_BAUDRATE_NMRA: u32 = 68966;
-//Deshalb wird auch hier die doppelte Baudrate verwendet und dann wie folgt kodiert:
-//1: 0xFF, 0x00
-//0: 0xFF, 0xFF, 0x00, 0x00
-const _SPI_BAUDRATE_NMRA_2: u32 = _SPI_BAUDRATE_NMRA * 2;
-
 //SPI Baudrate für MFX.
 //Auch hier müssen wir auf sicher 96 Bytes kommen um im DMA Modus zu sein und keine Pause zwischen den Bytes zu haben.
 //1 Bit in MFX sind immer 100us. 1 Bit wird auf ein SPI Byte gelegt, also für ein Bit 100 / 8 = 12.5us -> 80000 Baud
@@ -138,9 +127,11 @@ pub trait DdlProtokoll {
   /// * adr - Adresse der Lok
   /// * drive_mode - Fahrtrichtung / Nothalt
   /// * speed - aktuelle Geschwindigkeit
+  /// * speed_steps - Anzahl Speed Steps die verwendet werden soll. Protokoll abhängig.
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis"
   fn get_gl_basis_tel(
-    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, funktionen: u64,
+    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, speed_steps: usize,
+    funktionen: u64,
   ) -> DdlTel;
   /// Erzeugt das / die Fx Zusatztelegramm(e) für GL.
   /// - Funktionen nach "get_Anz_F_Basis"
