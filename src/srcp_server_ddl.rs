@@ -204,7 +204,6 @@ impl DDL {
 
     //Alle unterstützten Devices
     let all_devices = self.get_all_devices(&tx);
-    //Welches Device ist aktuell im Refresh Zyklus
     loop {
       //Immer alle ankommenden Kommandos auslesen
       loop {

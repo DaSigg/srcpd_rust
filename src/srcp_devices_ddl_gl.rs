@@ -1,12 +1,19 @@
-use std::{collections::HashMap, sync::mpsc::Sender};
+use std::{collections::HashMap, sync::mpsc::Sender, thread, time::Instant};
 
 use spidev::Spidev;
 
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
-  srcp_protocol_ddl::{DdlProtokolle, GLDriveMode, HashMapProtokollVersion},
+  srcp_protocol_ddl::{DdlProtokolle, DdlTel, GLDriveMode, HashMapProtokollVersion},
   srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType},
 };
+
+/// Anzahl initialisierter GL damit in Modus ohne extra Delays ziwschen Telegrammen
+/// an die selbe GL  gewechselt wird.
+/// Dies muss genügend gross sein, um einen verzögert gesendeten Buffer einer GL innerhalb eines
+/// Refreshzyklus abzubauen.
+/// Theoretischer Worst Case: DCC Lok mit 64 Funktionen könnte zu 11 Telegrammen führen
+const MIN_ANZ_GL_NO_DELAY: usize = 15;
 
 ///Verwaltung einer initialisierten GL's
 struct GLInit {
@@ -57,6 +64,8 @@ pub struct DdlGL<'a> {
   adr_refresh: usize,
   ///Alle noch nicht durch GL verwendeten aber vorhandenen Protokolle für Idle Telegramme
   all_idle_protokolle: Vec<DdlProtokolle>,
+  ///Buffer für verzögertes senden
+  tel_buffer: Option<DdlTel>,
 }
 
 impl DdlGL<'_> {
@@ -83,6 +92,7 @@ impl DdlGL<'_> {
       all_gl: HashMap::new(),
       adr_refresh: 0,
       all_idle_protokolle,
+      tel_buffer: None,
     }
   }
 
@@ -183,7 +193,7 @@ impl DdlGL<'_> {
   /// * refresh - Wenn false: Basistelegram (Fahren) wird immer versendet, zusätzliche Fx Telegramme
   ///             (Protokollabhängig) nur bei Veränderung.
   ///             Wenn true: es wird immer allles versendet (Lok in Refresh Zyklus)
-  fn send_gl_tel(&self, adr: usize, refresh: bool) {
+  fn send_gl_tel(&mut self, adr: usize, refresh: bool) {
     let gl = &self.all_gl[&adr];
     //Passendes Protokoll / Version suchen
     let mut protokoll = self
@@ -194,17 +204,83 @@ impl DdlGL<'_> {
       .unwrap()
       .borrow_mut();
     //Basis GL Telegram erzeugen und zum Booster Versenden
-    let ddl_tel = protokoll.get_gl_basis_tel(
+    let mut ddl_tel = protokoll.get_gl_new_tel();
+    protokoll.get_gl_basis_tel(
       adr,
       gl.direction,
       gl.speed,
       gl.protokoll_speedsteps,
       gl.fnkt,
+      &mut ddl_tel,
     );
-    self.send(self.spidev, &ddl_tel);
     //Zusatztelegramm mit weiteren Fx wenn sich diese verändert haben
-    if let Some(ddl_tel) = protokoll.get_gl_zusatz_tel(adr, refresh, gl.fnkt) {
-      self.send(self.spidev, &ddl_tel);
+    protokoll.get_gl_zusatz_tel(
+      adr,
+      refresh,
+      gl.fnkt,
+      gl.protokoll_number_functions,
+      &mut ddl_tel,
+    );
+    drop(protokoll);
+    self.send_tel(&mut ddl_tel);
+  }
+  /// Senden von GL Telegrammen.
+  /// Bis "MIN_ANZ_GL_NO_DELAY" Anzahl initalisierter GL's wird mit Wartezeit zwischen Telegrammen in einem Paket
+  /// gearbeitet.
+  /// Ab dieser Anzahl GL's über Buffer mit einschieben eines anderen Telegramms optimiert.
+  /// # Arguments
+  /// * ddl_tel - Das Telegramm, das gesendet werden soll.
+  fn send_tel(&mut self, ddl_tel: &mut DdlTel) {
+    while ddl_tel.daten.len() > 0 {
+      //Wann darf das nächste Tel. gesendet werden falls mit Delay gearbeitet wird
+      let time_last = Instant::now();
+      self.send(self.spidev, ddl_tel);
+
+      //Und jetzt löschen was gesendet wurde
+      ddl_tel.daten.remove(0);
+      //Direktes weitersenden wenn nicht genügend GL's vorhanden sind oder wenn kein Delay verlangt wird.
+      if (ddl_tel.daten.len() > 0)
+        && ((self.all_gl.len() < MIN_ANZ_GL_NO_DELAY) || ddl_tel.delay.is_zero())
+      {
+        let used_delay = Instant::now() - time_last;
+        if used_delay < ddl_tel.delay {
+          thread::sleep(ddl_tel.delay - used_delay);
+        }
+      } else {
+        //Optimiertes weitersenden über Buffer
+        break;
+      }
+    }
+    //Immer aufrufen, auch wenn dieses Telegramm vollständig gesendet wurde um senden eines eventuell
+    //noch im Buffe5r befindlichen Telegrammes zu ermöglichen.
+    self.send_buffer(ddl_tel);
+  }
+
+  /// Verwaltung von Telegrammen die nicht unmittelbar aufeinander folgend gesendet werden dürfen.
+  /// z.B. ist 5ms Pause zwischen zwei DCC Telegrammen an die selbe Adresse notwendig.
+  /// Um nicht einfach inneffizent 5ms zu warten werden solche Telegramme zurückgehalten und nach
+  /// einem anderen Telegramm gesendet.
+  /// Folgendes Verhalten:
+  /// - Wenn ein Telegramme mit noch nicht gesendetem Inhalt übergeben wurde -> Buffer.
+  /// - Wenn bereits eine DDLTel. auf verzögertes Senden wartete, dann wird dieses gesendet.
+  /// Damit ergibt sich eine Rekursion wenn 2 verzögerte Telegramme vorhanden sind, diese werden
+  /// abwechselnd abgearbeitet bis nur noch eines (oder keines) mehr vorhanden ist.
+  /// Es wird als Vereinfachung davon ausgegangen, dass die notwendige Verzögerung (z.B. 5 / 4 ms für DCC)
+  /// immer durch ein anderes Telegramm erreicht werden kann.
+  /// # Arguments
+  /// * ddl_tel - Das Telegramm, das verzögert gesendet werden soll.
+  fn send_buffer(&mut self, ddl_tel: &DdlTel) {
+    //Zuerst Telegramm aus Buffer holen
+    let mut tel_aus_buffer = self.tel_buffer.clone();
+    //Dann dieses Telegramm in Buffer wenn es noch ungesendete Teile hat.
+    if ddl_tel.daten.len() > 0 {
+      self.tel_buffer = Some(ddl_tel.clone());
+    } else {
+      self.tel_buffer = None;
+    }
+    //Wenn ein Telegramm im Buffer war, dann wird dieses jetzt gesendet
+    if tel_aus_buffer.is_some() {
+      self.send_tel(tel_aus_buffer.as_mut().unwrap());
     }
   }
 }
@@ -449,11 +525,14 @@ impl SRCPDeviceDDL for DdlGL<'_> {
     //Von allen vorhandenen Protokollen das Idle Telegramm senden, wenn das Protokoll nicht schon gebraucht
     //wurde. Wenn alle Protokolle bereits mit GL verwendet werden, dann machen wir hier einmal nichts, nächster Aufruf kommt wieder.
     if self.adr_refresh == 0 {
-      for protokoll in &self.all_idle_protokolle {
+      for i in 0..self.all_idle_protokolle.len() {
         //Immer erste vorhandene Version für Idle Tel. verwenden
-        let idle_protokoll = self.all_protokolle[&protokoll].values().next().unwrap();
-        let idle_tel = idle_protokoll.borrow().get_idle_tel();
-        self.send(self.spidev, &idle_tel);
+        let idle_protokoll = self.all_protokolle[&self.all_idle_protokolle[i]]
+          .values()
+          .next()
+          .unwrap();
+        let mut idle_tel = idle_protokoll.borrow().get_idle_tel();
+        self.send_tel(&mut idle_tel);
       }
     } else {
       //Sobald eine Lok vorhanden ist, Refresh senden

@@ -162,8 +162,12 @@ impl DdlGA<'_> {
     let protokoll = self.all_ga[&adr].protokoll;
     //Zum Booster Versenden, erstes passendes Protokoll verwenden, keine Versionsangabe für GA
     let protokoll = self.all_protokolle[&protokoll].values().next().unwrap();
-    let ddl_tel = protokoll.borrow_mut().get_ga_tel(adr, port, value);
-    self.send(self.spidev, &ddl_tel);
+    let mut ddl_tel = protokoll.borrow().get_ga_new_tel();
+    protokoll
+      .borrow_mut()
+      .get_ga_tel(adr, port, value, &mut ddl_tel);
+    //Es ist nur ein Telegramm, keine Behandlung verzögertes senden notwendig
+    self.send(self.spidev, &mut ddl_tel);
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr, port, value);
   }

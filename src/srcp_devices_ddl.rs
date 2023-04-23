@@ -30,16 +30,22 @@ pub trait SRCPDeviceDDL {
     false
   }
   /// Senden von Schienentelegrammen über SPI Bus
-  /// # Arguments
+  /// Das gesendete Teleramm wird aus "ddl_tel" gelöscht.
   /// * spidev - Geöffnetes SPI interface über das Telegramme zum Booster gesendet werden können
-  /// * ddl_tel - Das zu sendende Telegramm
-  fn send(&self, spidev: &Option<Spidev>, ddl_tel: &DdlTel) {
-    let mut transfer = SpidevTransfer::write(ddl_tel.daten.as_slice());
+  /// * ddl_tel - Das zu sendende Telegramm. Es wird hier nur das erste Teleramm gesendet und dann gelöscht.
+  fn send(&self, spidev: &Option<Spidev>, ddl_tel: &mut DdlTel) {
+    assert!(
+      ddl_tel.daten.len() > 0,
+      "Aufruf SRCPDeviceDDL::send mit leerem ddl_tel"
+    );
+    let mut transfer = SpidevTransfer::write(ddl_tel.daten[0].as_slice());
     transfer.speed_hz = ddl_tel.hz;
     spidev
       .as_ref()
       .unwrap()
       .transfer(&mut transfer)
       .expect("DDL SPI write fail");
+    //Und jetzt löschen was gesendet wurde
+    ddl_tel.daten.remove(0);
   }
 }
