@@ -96,6 +96,8 @@ pub struct DccProtokoll {
   old_drive_mode: [GLDriveMode; MAX_DCC_GL_ADRESSE_LANG + 1],
   /// Erkennung Funktionswechsel für die nicht immer gesendeten höheren Fx
   old_funktionen: [u64; MAX_DCC_GL_ADRESSE_LANG + 1],
+  /// Anzahl Initialisierte Funktionen
+  funk_anz: [usize; MAX_DCC_GL_ADRESSE_LANG + 1],
 }
 
 impl DccProtokoll {
@@ -107,6 +109,7 @@ impl DccProtokoll {
       version,
       old_drive_mode: [GLDriveMode::Vorwaerts; MAX_DCC_GL_ADRESSE_LANG + 1],
       old_funktionen: [0; MAX_DCC_GL_ADRESSE_LANG + 1],
+      funk_anz: [0; MAX_DCC_GL_ADRESSE_LANG + 1],
     }
   }
 
@@ -236,6 +239,15 @@ impl DccProtokoll {
   }
 }
 impl DdlProtokoll for DccProtokoll {
+  /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
+  /// # Arguments
+  /// * adr - Adresse der Lok
+  /// * uid - UID des Dekoders -> hier nicht verwendet
+  /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
+  ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
+  fn init_gl(&mut self, adr: usize, _uid: u32, funk_anz: usize) {
+    self.funk_anz[adr] = funk_anz;
+  }
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> usize {
     match self.version {
@@ -347,24 +359,30 @@ impl DdlProtokoll for DccProtokoll {
     }
     self.add_xor(ddl_tel, &mut xor);
 
-    //Und nun noch F0 bis F5. Da 5ms Pause zwischen 2 DCC Telegrammen an selbe Adresse notwendig ist,
-    //als 2. unabhängigs Telegramm.
-    //Worst case Länge: 2 Bytes Adresse + 1 Nutzbyte
-    ddl_tel.daten.push(Vec::with_capacity(
-      DCC_MAX_LEN_BASIS + 3 * DCC_MAX_LEN_PRO_BYTE,
-    ));
-    //Addresse in 1 oder 2 Bytes
-    xor = self.add_adr(ddl_tel, adr);
-    //DCC_INST_F0_F4 -> Bit 0..3 = F1..F4, Bit4 = F0
-    //Falls nur 4 Bit Speed, dann wurde F0 bereits mit Speed Kommando übertragen.
-    //Macht aber nichts, wenn F0 immer hier auch noch übertragen wird.
-    let mut f0_f4_byte = DCC_INST_F0_F4;
-    f0_f4_byte |= <u64 as TryInto<u8>>::try_into((funktionen & BIT_MASK_F0_F4) >> 1).unwrap();
-    if (funktionen & 1) != 0 {
-      f0_f4_byte |= 0b00010000;
+    //Nur wenn notwendig: F0..F4 Telegramm
+    //Je nach Speedsteps muss F0 hier berücksichtigt werden oder nicht
+    if ((self.funk_anz[adr] > 0) && (speed_steps > SPEED_STEP_4BIT))
+      || ((self.funk_anz[adr] > 1) && (speed_steps <= SPEED_STEP_4BIT))
+    {
+      //Und nun noch F0 bis F5. Da 5ms Pause zwischen 2 DCC Telegrammen an selbe Adresse notwendig ist,
+      //als 2. unabhängigs Telegramm.
+      //Worst case Länge: 2 Bytes Adresse + 1 Nutzbyte
+      ddl_tel.daten.push(Vec::with_capacity(
+        DCC_MAX_LEN_BASIS + 3 * DCC_MAX_LEN_PRO_BYTE,
+      ));
+      //Addresse in 1 oder 2 Bytes
+      xor = self.add_adr(ddl_tel, adr);
+      //DCC_INST_F0_F4 -> Bit 0..3 = F1..F4, Bit4 = F0
+      //Falls nur 4 Bit Speed, dann wurde F0 bereits mit Speed Kommando übertragen.
+      //Macht aber nichts, wenn F0 immer hier auch noch übertragen wird.
+      let mut f0_f4_byte = DCC_INST_F0_F4;
+      f0_f4_byte |= <u64 as TryInto<u8>>::try_into((funktionen & BIT_MASK_F0_F4) >> 1).unwrap();
+      if (funktionen & 1) != 0 {
+        f0_f4_byte |= 0b00010000;
+      }
+      self.add_byte(ddl_tel, f0_f4_byte, &mut xor);
+      self.add_xor(ddl_tel, &mut xor);
     }
-    self.add_byte(ddl_tel, f0_f4_byte, &mut xor);
-    self.add_xor(ddl_tel, &mut xor);
     //F0..F4 übernehmen
     self.old_funktionen[adr] &= !BIT_MASK_F0_F4;
     self.old_funktionen[adr] |= funktionen & BIT_MASK_F0_F4;
@@ -377,12 +395,11 @@ impl DdlProtokoll for DccProtokoll {
   /// * adr - Adresse der Lok
   /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt ab "get_Anz_F_Basis"
-  /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
-  ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_gl_zusatz_tel(
-    &mut self, adr: usize, refresh: bool, funktionen: u64, funk_anz: usize, ddl_tel: &mut DdlTel,
+    &mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
+    let funk_anz = self.funk_anz[adr];
     //F5..F8 auf Veränderungen prüfen
     if ((((self.old_funktionen[adr] ^ funktionen) & BIT_MASK_F5_F8) != 0) || refresh)
       && (funk_anz > 5)
@@ -544,11 +561,12 @@ impl DdlProtokoll for DccProtokoll {
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles
-  fn get_idle_tel(&self) -> DdlTel {
+  /// Return None wenn kein Idle Telegramm vorhanden ist
+  fn get_idle_tel(&self) -> Option<DdlTel> {
     //DCC Idle Telegramm: 1111111111111111 0 11111111 0 00000000 0 11111111 1
     let mut ddl_idle_tel = DdlTel::new(
       SPI_BAUDRATE_NMRA_2,
-      Duration::from_millis(0), //Nicht notwendig für Idle Tel.
+      Duration::ZERO, //Nicht notwendig für Idle Tel.
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
     );
     self.add_sync(&mut ddl_idle_tel);
@@ -569,6 +587,6 @@ impl DdlProtokoll for DccProtokoll {
       .last_mut()
       .unwrap()
       .extend_from_slice(DCC_BIT_1);
-    ddl_idle_tel
+    Some(ddl_idle_tel)
   }
 }

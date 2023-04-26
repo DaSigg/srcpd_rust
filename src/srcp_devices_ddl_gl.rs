@@ -214,13 +214,7 @@ impl DdlGL<'_> {
       &mut ddl_tel,
     );
     //Zusatztelegramm mit weiteren Fx wenn sich diese verändert haben
-    protokoll.get_gl_zusatz_tel(
-      adr,
-      refresh,
-      gl.fnkt,
-      gl.protokoll_number_functions,
-      &mut ddl_tel,
-    );
+    protokoll.get_gl_zusatz_tel(adr, refresh, gl.fnkt, &mut ddl_tel);
     drop(protokoll);
     self.send_tel(&mut ddl_tel);
   }
@@ -308,23 +302,35 @@ impl SRCPDeviceDDL for DdlGL<'_> {
             if let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) {
               if let Some(protokolle_impl) = self.all_protokolle.get(&protokoll) {
                 if let Some(prot_impl) = protokolle_impl.get(cmd_msg.parameter[2].as_str()) {
-                  //Adressprüfung
-                  if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
-                    if adr <= prot_impl.borrow_mut().get_ga_max_adr() {
-                      //Alle weiteren Parameter ausser "lokname" bei MFX müssen Zahlen >=0 sein
-                      result = true;
-                      for i in 3..cmd_msg.parameter.len() {
-                        if (i != 6) && (cmd_msg.parameter[i].parse::<u32>().is_err()) {
-                          result = false;
-                          self
-                            .tx
-                            .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
-                            .unwrap();
-                          break;
+                  if prot_impl.borrow().uid() && (cmd_msg.parameter.len() < 6) {
+                    self
+                      .tx
+                      .send(SRCPMessage::new_err(cmd_msg, "419", "list too short"))
+                      .unwrap();
+                  } else {
+                    //Adressprüfung
+                    if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+                      if (adr > 0) && (adr <= prot_impl.borrow_mut().get_gl_max_adr()) {
+                        //Alle weiteren Parameter ausser "lokname" bei MFX müssen Zahlen >=0 sein
+                        result = true;
+                        for i in 3..cmd_msg.parameter.len() {
+                          if (i != 6) && (cmd_msg.parameter[i].parse::<u32>().is_err()) {
+                            result = false;
+                            self
+                              .tx
+                              .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+                              .unwrap();
+                            break;
+                          }
                         }
-                      }
-                      if result {
-                        self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
+                        if result {
+                          self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
+                        }
+                      } else {
+                        self
+                          .tx
+                          .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+                          .unwrap();
                       }
                     } else {
                       self
@@ -332,11 +338,6 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                         .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
                         .unwrap();
                     }
-                  } else {
-                    self
-                      .tx
-                      .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
-                      .unwrap();
                   }
                 } else {
                   self
@@ -438,16 +439,33 @@ impl SRCPDeviceDDL for DdlGL<'_> {
         //Das Protokoll
         let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) else {return};
         //Version
-        let version = cmd_msg.parameter[2].clone();
+        let protokoll_version = cmd_msg.parameter[2].clone();
         //decoderspeedsteps
         let protokoll_speedsteps = cmd_msg.parameter[3].parse::<usize>().unwrap();
         //numberofdecoderfunctions
         let protokoll_number_functions = cmd_msg.parameter[4].parse::<usize>().unwrap();
+        //Protokoll spezifisches Init
+        {
+          //Passendes Protokoll / Version suchen
+          let mut protokoll = self
+            .all_protokolle
+            .get(&protokoll)
+            .unwrap()
+            .get(protokoll_version.as_str())
+            .unwrap()
+            .borrow_mut();
+          let uid = if protokoll.uid() {
+            cmd_msg.parameter[5].parse::<u32>().unwrap()
+          } else {
+            0
+          };
+          protokoll.init_gl(adr, uid, protokoll_number_functions);
+        }
         self.all_gl.insert(
           adr,
           GLInit::new(
             protokoll,
-            version,
+            protokoll_version,
             protokoll_speedsteps,
             protokoll_number_functions,
           ),
@@ -532,7 +550,9 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           .next()
           .unwrap();
         let mut idle_tel = idle_protokoll.borrow().get_idle_tel();
-        self.send_tel(&mut idle_tel);
+        if let Some(tel) = idle_tel.as_mut() {
+          self.send_tel(tel);
+        }
       }
     } else {
       //Sobald eine Lok vorhanden ist, Refresh senden

@@ -195,7 +195,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
                 let prot_impl = protokolle_impl.values().next().unwrap();
                 //Adressprüfung
                 if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
-                  if adr <= prot_impl.borrow_mut().get_gl_max_adr() {
+                  if (adr > 0) && (adr <= prot_impl.borrow_mut().get_ga_max_adr()) {
                     //OK an diese Session
                     self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
                     result = true;

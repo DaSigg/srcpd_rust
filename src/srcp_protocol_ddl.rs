@@ -1,32 +1,5 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
 
-//SPI Baudrate für MFX.
-//Auch hier müssen wir auf sicher 96 Bytes kommen um im DMA Modus zu sein und keine Pause zwischen den Bytes zu haben.
-//1 Bit in MFX sind immer 100us. 1 Bit wird auf ein SPI Byte gelegt, also für ein Bit 100 / 8 = 12.5us -> 80000 Baud
-//Grösse Paket wird damit (mit Sync Muster) für das kleinst mögliche Paket, das wir senden:
-const _SPI_BAUDRATE_MFX: u32 = 80000;
-//Minimales Paket das verwendet wird, ist "Fahren kurz" plus "Funktionen kurz"
-// - 0            :  4 Bit -> Sicherstellen, dass Startpegel immer 0 ist
-// - Sync         :  5 Bit
-// - 10AAAAAAA    :  9 Bit Adresse (Minimal bei 7 Bit Adresse)
-// - Kommando     :  7 Bit "Fahren kurz" 3+1+3
-// - Kommando     :  7 Bit "Funktionen kurz" 3+4
-// - Checksumme   :  8 Bit
-// - Sync         : 10 Bit
-// - Total        : 50 Bit
-//Auch hier kommt nun deshalb wieder die doppelte Baudrate ins Spiel, damit wären wir bei 2*50=100 Bytes.
-//1 MFX Bit -> 2 SPI Bytes
-//Und mit mehr als 16 Funktionen haben wir ein neues minimales Paket:
-// - 0            :  4 Bit -> Sicherstellen, dass Startpegel immer 0 ist
-// - Sync         :  5 Bit
-// - 10AAAAAAA    :  9 Bit Adresse (Minimal bei 7 Bit Adresse)
-// - Kommando     : 12 Bit "Funktion einzeln" 3+7+1+1
-// - Checksumme   :  8 Bit
-// - Sync         : 10 Bit
-// - Total        : 48 Bit
-//Und Glück gehabt, wir sind mit mal 2 gerade auf 96 gekommen...
-const _SPI_BAUDRATE_MFX_2: u32 = _SPI_BAUDRATE_MFX * 2;
-
 /// Telegramm zum senden über SPI
 #[derive(Debug, Clone)]
 pub struct DdlTel {
@@ -120,6 +93,18 @@ impl ToString for GLDriveMode {
 /// der Implementierung berücksichtigt werden, schlussendlich eine Instanz pro
 /// Version erzeugt werden.
 pub trait DdlProtokoll {
+  /// Legt fest, ob das Protokoll eine UID benötigt, die bei GL INIT Kommando angegeben werden muss
+  /// Return true wenn UID benötigt.
+  fn uid(&self) -> bool {
+    false
+  }
+  /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
+  /// # Arguments
+  /// * adr - Adresse der Lok
+  /// * uid - UID des Dekoders
+  /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
+  ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
+  fn init_gl(&mut self, adr: usize, uid: u32, funk_anz: usize);
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> usize;
   /// Liefert die max. erlaubte Schaltmoduladdresse
@@ -153,12 +138,8 @@ pub trait DdlProtokoll {
   /// * adr - Adresse der Lok
   /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt ab "get_Anz_F_Basis"
-  /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
-  ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_gl_zusatz_tel(
-    &mut self, adr: usize, refresh: bool, funktionen: u64, funk_anz: usize, ddl_tel: &mut DdlTel,
-  );
+  fn get_gl_zusatz_tel(&mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel);
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
   fn get_ga_new_tel(&self) -> DdlTel;
   /// Erzeugt ein GA Telegramm
@@ -169,7 +150,8 @@ pub trait DdlProtokoll {
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_ga_tel(&self, adr: usize, port: usize, value: bool, ddl_tel: &mut DdlTel);
   /// Liefert das Idle Telegramm dieses Protokolles
-  fn get_idle_tel(&self) -> DdlTel;
+  /// Return None wenn kein Idle Telegramm vorhanden ist
+  fn get_idle_tel(&self) -> Option<DdlTel>;
 }
 
 /// Typen zu Verwaltung der Protokolle

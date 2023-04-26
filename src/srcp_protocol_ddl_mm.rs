@@ -62,6 +62,8 @@ pub struct MMProtokoll {
   old_funktionen: [u64; MAX_MM_ADRESSE + 1],
   /// Speicherung Speed um F1-F4 Pakete für MM2 & 3, die auch den Speed enthalten, korrekt erzeugen zu können
   old_speed: [usize; MAX_MM_ADRESSE + 1],
+  /// Anzahl Initialisierte Funktionen
+  funk_anz: [usize; MAX_MM_ADRESSE + 1],
 }
 impl MMProtokoll {
   /// Neue Instanz erstellen
@@ -73,6 +75,7 @@ impl MMProtokoll {
       old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MM_ADRESSE + 1],
       old_funktionen: [0; MAX_MM_ADRESSE + 1],
       old_speed: [0; MAX_MM_ADRESSE + 1],
+      funk_anz: [0; MAX_MM_ADRESSE + 1],
     }
   }
   /// MM 4 Adressbits (trinär codiert)
@@ -339,6 +342,15 @@ impl MMProtokoll {
   }
 }
 impl DdlProtokoll for MMProtokoll {
+  /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
+  /// # Arguments
+  /// * adr - Adresse der Lok
+  /// * uid - UID des Dekoders -> hier nicht verwendet
+  /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
+  ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
+  fn init_gl(&mut self, adr: usize, _uid: u32, funk_anz: usize) {
+    self.funk_anz[adr] = funk_anz;
+  }
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> usize {
     MAX_MM_ADRESSE
@@ -396,15 +408,14 @@ impl DdlProtokoll for MMProtokoll {
   /// * adr - Adresse der Lok
   /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt ab "get_Anz_F_Basis"
-  /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
-  ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_gl_zusatz_tel(
-    &mut self, adr: usize, refresh: bool, funktionen: u64, funk_anz: usize, ddl_tel: &mut DdlTel,
+    &mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
     if self.version == MmVersion::V1 {
       return;
     }
+    let funk_anz = self.funk_anz[adr];
     //Nun noch F1-4, jedoch nur bei Veränderung sofort senden
     for i in 1..self.get_gl_anz_f() {
       if i >= funk_anz {
@@ -475,7 +486,8 @@ impl DdlProtokoll for MMProtokoll {
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles
-  fn get_idle_tel(&self) -> DdlTel {
+  /// Return None wenn kein Idle Telegramm vorhanden ist
+  fn get_idle_tel(&self) -> Option<DdlTel> {
     //Idle Telegramm MM ist Telegramm an nie verwendete Lok Adresse 80 (GL Adresse 80 wird als eigentliche Adr 0 ausgegeben)
     let mut ddl_idle_tel = self.get_gl_new_tel();
     {
@@ -489,6 +501,6 @@ impl DdlProtokoll for MMProtokoll {
     //Dann Funktion Off, Speed 0
     self.add_mm1_fnkt_value(&mut ddl_idle_tel, false, 0);
     self.complete_mm_paket(&mut ddl_idle_tel);
-    ddl_idle_tel
+    Some(ddl_idle_tel)
   }
 }
