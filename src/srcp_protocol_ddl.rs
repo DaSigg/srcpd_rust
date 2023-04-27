@@ -152,6 +152,11 @@ pub trait DdlProtokoll {
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
   fn get_idle_tel(&self) -> Option<DdlTel>;
+  /// Liefert zusätzliche, Protokoll spzifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
+  /// Liefert None, wenn es nichts zur versenden gibt
+  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
+    None
+  }
 }
 
 /// Typen zu Verwaltung der Protokolle

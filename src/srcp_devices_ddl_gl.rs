@@ -570,4 +570,17 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       self.send_info_msg(session_id, *adr);
     }
   }
+  /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
+  /// von neuen Kommando oder refresh unabhängigen Aufgaben.
+  /// Wird hier verwendet um allen vorhandenen Protokollen die Möglichkeit zu geben
+  /// ihr periodische Aufgaben / Telegramme auszuführen.
+  fn execute(&mut self) {
+    for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
+      for (_version, prot_impl) in prot_versionen {
+        if let Some(tel) = prot_impl.borrow_mut().get_protokoll_telegrammme().as_mut() {
+          self.send_tel(tel);
+        }
+      }
+    }
+  }
 }

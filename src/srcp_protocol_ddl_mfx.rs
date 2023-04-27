@@ -1,4 +1,9 @@
-use std::time::Duration;
+use std::{
+  fs,
+  time::{Duration, Instant},
+};
+
+use log::{info, warn};
 
 use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
 
@@ -79,6 +84,11 @@ const MFX_CMD_FNKT_F0_F15: MfxBits = (0b0111, 4);
 const MFX_CMD_FNKT_EINZELN: MfxBits = (0b100, 3);
 /// Kommando Konfiguration Schienenadresse
 const MFX_CMD_KONFIG_SID: MfxBits = (0b111011, 6);
+/// Kommando UID und Neuanmeldezähler Zentrale
+const MFX_CMD_KONFIG_UID: MfxBits = (0b111101, 6);
+
+/// Intervall versenden UID Zentrale
+const INTERVALL_UID: Duration = Duration::from_millis(500);
 
 pub enum MfxVersion {
   V0, //Analog Implementierung im alten C srcpd
@@ -87,6 +97,12 @@ pub enum MfxVersion {
 pub struct MfxProtokoll {
   /// Version, aktuell nur 0, keine Verwendung.
   _version: MfxVersion,
+  /// UID der Zentrale
+  uid_zentrale: u32,
+  /// Neuanmeldezähler
+  reg_counter: u16,
+  /// Pfad zum File zur Speicherung Neuanmeldezähler
+  path_reg_counter_file: String,
   /// Halten Richtung bei Richtung Nothalt
   old_drive_mode: [GLDriveMode; MAX_MFX_GL_ADRESSE + 1],
   /// Erkennung Funktionswechsel für die nicht immer gesendeten höheren Fx
@@ -99,21 +115,49 @@ pub struct MfxProtokoll {
   new_sid: [bool; MAX_MFX_GL_ADRESSE + 1],
   /// Anzahl aufeinander folgende 1er für MFX Bitstuffing. Wird mit "add_start_sync" auf 0 gesetzt.
   anz_eins: usize,
+  /// Zeitpunkt letztes Versenden UID Zentrale
+  zeitpunkt_uid: Instant,
 }
 
 impl MfxProtokoll {
   /// Neue Instanz erstellen
   /// # Arguments
   /// * version - V1 oder V2
-  pub fn from(version: MfxVersion) -> MfxProtokoll {
+  /// * uid_zentrale - Zu verwendende UID der Zentrale
+  pub fn from(
+    version: MfxVersion, uid_zentrale: u32, path_reg_counter_file: String,
+  ) -> MfxProtokoll {
+    //Neuanmeldezähler laden
+    let mut reg_counter: u16 = 0;
+    if let Ok(reg_count_str) = fs::read_to_string(&path_reg_counter_file) {
+      if let Ok(value) = reg_count_str.parse::<u16>() {
+        reg_counter = value;
+      }
+    } else {
+      warn!(
+        "MfxProtokoll Neuanmeldezählerfile {path_reg_counter_file} konnte nicht gelesen werden."
+      )
+    }
+    info!("MfxProtokoll Start mit Neuanmeldezähler={reg_counter}");
     MfxProtokoll {
       _version: version,
+      uid_zentrale,
+      reg_counter,
+      path_reg_counter_file,
       old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MFX_GL_ADRESSE + 1],
       old_funktionen: [0; MAX_MFX_GL_ADRESSE + 1],
       uid: [0; MAX_MFX_GL_ADRESSE + 1],
       funk_anz: [0; MAX_MFX_GL_ADRESSE + 1],
       new_sid: [false; MAX_MFX_GL_ADRESSE + 1],
       anz_eins: 0,
+      zeitpunkt_uid: Instant::now(),
+    }
+  }
+
+  /// Speichern des Neuanmeldezählers
+  fn save_registration_counter(&self) {
+    if fs::write(&self.path_reg_counter_file, self.reg_counter.to_string()).is_err() {
+      warn!("MFX Neuanmeldezähler konnte nicht gespeichert werden.");
     }
   }
 
@@ -256,6 +300,24 @@ impl MfxProtokoll {
     self.add_bits(MFX_CMD_KONFIG_SID, ddl_tel, &mut crc);
     self.add_bits((adr as u32, 14), ddl_tel, &mut crc);
     self.add_bits((self.uid[adr], 32), ddl_tel, &mut crc);
+    self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
+    self.add_ende_sync(ddl_tel);
+  }
+  /// MFX Paket mit UID der Zentrale und Neuanmeldezähler versenden.
+  /// # Arguments
+  /// * ddl_tel - Telegramm, bei dem Zentrale UID Telegramm hinzugefügt werden soll
+  fn send_uid_regcounter(&mut self, ddl_tel: &mut DdlTel) {
+    //Format des Bitstreams:
+    //10AAAAAAA111101UUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUZZZZZZZZZZZZZZZZCCCCCCCC
+    //A=0 (Broadcast)
+    //U=32 Bit UID
+    //Z=16 Bit Neuanmeldezähler
+    //C=Checksumme
+    self.add_start_sync(ddl_tel);
+    let mut crc = self.add_adr(0, ddl_tel);
+    self.add_bits(MFX_CMD_KONFIG_UID, ddl_tel, &mut crc);
+    self.add_bits((self.uid_zentrale, 32), ddl_tel, &mut crc);
+    self.add_bits((self.reg_counter as u32, 16), ddl_tel, &mut crc);
     self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
     self.add_ende_sync(ddl_tel);
   }
@@ -481,5 +543,19 @@ impl DdlProtokoll for MfxProtokoll {
   /// MFX hat kein Idle Telegramm. Es wird periodisch die UID der Zentrale und Dekoder Abfrage gesendet
   fn get_idle_tel(&self) -> Option<DdlTel> {
     None
+  }
+  /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
+  /// Liefert None, wenn es nichts zur versenden gibt
+  /// Hier für MFX wird periodisch die UID / Neuanmeldezähler der Zentrale versandt
+  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
+    let now = Instant::now();
+    if now >= (self.zeitpunkt_uid + INTERVALL_UID) {
+      self.zeitpunkt_uid = now;
+      let mut ddl_tel = self.get_gl_new_tel();
+      self.send_uid_regcounter(&mut ddl_tel);
+      Some(ddl_tel)
+    } else {
+      None
+    }
   }
 }

@@ -26,6 +26,8 @@ use crate::{srcp_devices_ddl_power::DdlPower, srcp_protocol_ddl::DdlProtokolle};
 
 /// Watchdog Timeout für Power Off
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
+/// Defaultpfad zum File für Speicherung Neuanmeldezähler
+const PATH_REG_COUNTER_FILE: &str = "/etc/srcpd.regcount";
 
 pub struct DDL {
   //Konfiguration
@@ -39,6 +41,8 @@ pub struct DDL {
   dcc_enabled: bool,
   //MFX Protokoll aktiv wenn UID > 0
   mfx_enabled_uid: u32,
+  //Pfad zu File zur Speicherung Neuanmeldezähler
+  mfx_reg_count_file: String,
   //Booster mit On/Off mit "Siggmode" (Impuls auf RTS für On, Impuls auf DTR für Off)
   siggmode: bool,
   //DSR Booster GO Meldung Invers (bei nicht siggmode)
@@ -60,6 +64,7 @@ impl Clone for DDL {
       maerklin_enabled: self.maerklin_enabled,
       dcc_enabled: self.dcc_enabled,
       mfx_enabled_uid: self.mfx_enabled_uid,
+      mfx_reg_count_file: self.mfx_reg_count_file.clone(),
       siggmode: self.siggmode,
       dsr_invers: self.dsr_invers,
       shortcut_delay: self.shortcut_delay,
@@ -78,6 +83,7 @@ impl DDL {
       maerklin_enabled: false,
       dcc_enabled: false,
       mfx_enabled_uid: 0,
+      mfx_reg_count_file: PATH_REG_COUNTER_FILE.to_string(),
       siggmode: false,
       dsr_invers: false,
       shortcut_delay: 0,
@@ -123,7 +129,11 @@ impl DDL {
       //MFX V0
       mfx_protocols.insert(
         "0",
-        Rc::new(RefCell::new(MfxProtokoll::from(MfxVersion::V0))),
+        Rc::new(RefCell::new(MfxProtokoll::from(
+          MfxVersion::V0,
+          self.mfx_enabled_uid,
+          self.mfx_reg_count_file.clone(),
+        ))),
       );
       all_protocols.insert(DdlProtokolle::Mfx, mfx_protocols);
     }
@@ -365,6 +375,12 @@ impl SRCPServer for DDL {
         .parse::<u32>()
         .ok()
         .ok_or("MFX UID muss eine Zahl > 0 sein")?;
+    }
+    if let Some(mfx_reg_count_file) = config_file_bus.get("mfx_reg_count_file") {
+      self.mfx_reg_count_file = mfx_reg_count_file
+        .as_ref()
+        .ok_or("DDL: zu mfx_reg_count_file muss ein Pfad angegegben werden.")?
+        .clone();
     }
     self.siggmode = config_file_bus.get("siggmode").is_some();
     self.dsr_invers = config_file_bus.get("dsr_invers").is_some();

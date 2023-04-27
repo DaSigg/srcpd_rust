@@ -191,7 +191,7 @@ impl DccProtokoll {
   /// - xor
   /// - 1 als Abschluss
   /// # Arguments
-  /// * ddl_tel - Telegramm, bei dem die Adresse ergänzt werden soll
+  /// * ddl_tel - Telegramm, bei dem die XOR Checksumme ergänzt werden soll
   /// * xor - xor Prüfsumme
   fn add_xor(&self, ddl_tel: &mut DdlTel, xor: &mut u8) {
     //Nach einem Byte abschliessendes 0
