@@ -84,7 +84,7 @@ impl MMProtokoll {
   /// * ddl_tel - Telegramm, zu dessen letztem Telegramm die Adressbits hinzugefügtw erden sollen
   /// * adr_dekoder - Adresse, die ergänzt werden soll, LSB wird zuerst gesendet, 0..80 erlaubt.
   fn add_mm_adr(&self, ddl_tel: &mut DdlTel, mut adr_dekoder: usize) {
-    assert!(adr_dekoder < 81);
+    assert!(adr_dekoder < 81, "MM Max Lokadresse ist 80");
     if adr_dekoder == 80 {
       adr_dekoder = 0;
     }
@@ -181,21 +181,21 @@ impl MMProtokoll {
     }
     //Bei MM2 wird nur je ein Bit des Paares für die Geschwindigkeit verwendet,
     //das andere für die absolute Richtungsinfo.
-    //Parallel zum Speed odieren wir hier die abs. Richtungsbits
+    //Parallel zum Speed kodieren wir hier die abs. Richtungsbits
     let mut abs_dir: usize;
     if dir == GLDriveMode::Rueckwaerts {
       //Rückwärts
-      if speed < 7 {
-        abs_dir = 0b1011;
+      if speed <= 7 {
+        abs_dir = 0b1101;
       } else {
-        abs_dir = 0b1010;
+        abs_dir = 0b0101;
       }
     } else {
       //Vorwärts
-      if speed < 7 {
-        abs_dir = 0b0101;
+      if speed <= 7 {
+        abs_dir = 0b1010;
       } else {
-        abs_dir = 0b1000;
+        abs_dir = 0b0010;
       }
     }
     //Dann Speed, 4 Bit, LSB als erstes, Verknüpft mit abs. Richtung
@@ -421,19 +421,19 @@ impl DdlProtokoll for MMProtokoll {
       if i >= funk_anz {
         break;
       }
-      //Neues Telegramm erzeugen
-      ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
-      //Als Basis Standard Fahren Telegramm verwenden und dieses dann auf F1-4 ändern
-      self.get_gl_basis_tel_raw(
-        adr,
-        self.old_drive_mode[adr],
-        self.old_speed[adr],
-        funktionen,
-        ddl_tel,
-      );
       let mask: u64 = 1 << i;
       if (((self.old_funktionen[adr] ^ funktionen) & mask) != 0) || refresh {
         //Veränderung oder immer verlangt
+        //Neues Telegramm erzeugen
+        ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
+        //Als Basis Standard Fahren Telegramm verwenden und dieses dann auf F1-4 ändern
+        self.get_gl_basis_tel_raw(
+          adr,
+          self.old_drive_mode[adr],
+          self.old_speed[adr],
+          funktionen,
+          ddl_tel,
+        );
         let mut fx_bits = MM_F1_4[i - 1];
         //Zustand der Funktion ergänzen
         if (funktionen & mask) != 0 {

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::mpsc::Sender, thread, time::Instant};
+use std::{collections::HashMap, sync::mpsc::Sender, thread};
 
 use spidev::Spidev;
 
@@ -226,19 +226,12 @@ impl DdlGL<'_> {
   /// * ddl_tel - Das Telegramm, das gesendet werden soll.
   fn send_tel(&mut self, ddl_tel: &mut DdlTel) {
     while ddl_tel.daten.len() > 0 {
-      //Wann darf das nächste Tel. gesendet werden falls mit Delay gearbeitet wird
-      let time_last = Instant::now();
       self.send(self.spidev, ddl_tel);
 
-      //Und jetzt löschen was gesendet wurde
-      ddl_tel.daten.remove(0);
       //Direktes weitersenden wenn nicht genügend GL's vorhanden sind oder wenn kein Delay verlangt wird.
-      if (ddl_tel.daten.len() > 0)
-        && ((self.all_gl.len() < MIN_ANZ_GL_NO_DELAY) || ddl_tel.delay.is_zero())
-      {
-        let used_delay = Instant::now() - time_last;
-        if used_delay < ddl_tel.delay {
-          thread::sleep(ddl_tel.delay - used_delay);
+      if (self.all_gl.len() < MIN_ANZ_GL_NO_DELAY) || ddl_tel.delay.is_zero() {
+        if !ddl_tel.delay.is_zero() {
+          thread::sleep(ddl_tel.delay);
         }
       } else {
         //Optimiertes weitersenden über Buffer
@@ -246,7 +239,7 @@ impl DdlGL<'_> {
       }
     }
     //Immer aufrufen, auch wenn dieses Telegramm vollständig gesendet wurde um senden eines eventuell
-    //noch im Buffe5r befindlichen Telegrammes zu ermöglichen.
+    //noch im Buffer befindlichen Telegrammes zu ermöglichen.
     self.send_buffer(ddl_tel);
   }
 
@@ -391,6 +384,8 @@ impl SRCPDeviceDDL for DdlGL<'_> {
               || cmd_msg.parameter[1] == "2")
               && cmd_msg.parameter[2].parse::<u8>().is_ok()
               && cmd_msg.parameter[3].parse::<u8>().is_ok()
+              && (cmd_msg.parameter[3].parse::<u8>().unwrap() > 0)
+            //vmax muss > 0 sein
             {
               result = true;
               //Wenn Funktionen vorhanden sind, dann müssen die alle 0 oder 1 sein
@@ -491,7 +486,26 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           .iter()
           .position(|&prot| prot == protokoll);
         if let Some(i) = index_used_prot {
-          self.all_idle_protokolle.remove(i);
+          //MM Protokoll wird erst ab 2 GL's aus Idle genommen.
+          //Grund: wenn MM Dekoder nur ihre eigene Adresse und gar nichts anderes sehen können sie nach Power Up
+          //in den MM Programmiermodus gehen ... :-(
+          let mut idle = true;
+          if protokoll == DdlProtokolle::Maerklin {
+            idle = false;
+            let mut count = 0;
+            for (_, gl) in &self.all_gl {
+              if gl.protokoll == DdlProtokolle::Maerklin {
+                count += 1;
+                if count >= 2 {
+                  idle = true;
+                  break;
+                }
+              }
+            }
+          }
+          if idle {
+            self.all_idle_protokolle.remove(i);
+          }
         }
       }
       SRCPMessageType::GET => {

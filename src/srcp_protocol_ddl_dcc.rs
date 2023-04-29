@@ -148,8 +148,8 @@ impl DccProtokoll {
         } else {
           DCC_BIT_1
         });
-      *xor ^= value;
     }
+    *xor ^= value;
   }
   /// Fügt die Addresse (1 Byte bis 127, 2 Byte wenn grösser) mit abschliessendem 0 zum letzten in
   /// ddl_tel enthaltenen Tel. hinzu
@@ -203,6 +203,12 @@ impl DccProtokoll {
     //Checksumme ergänzen
     self.add_byte(ddl_tel, *xor, xor);
     //Tel mit abschliessenden mit 1 Bit
+    ddl_tel
+      .daten
+      .last_mut()
+      .unwrap()
+      .extend_from_slice(DCC_BIT_1);
+    //Und nochmals ein 1 Bit damit noch ein korrekter Abschluss (letzte Flanke) da ist
     ddl_tel
       .daten
       .last_mut()
@@ -370,6 +376,7 @@ impl DdlProtokoll for DccProtokoll {
       ddl_tel.daten.push(Vec::with_capacity(
         DCC_MAX_LEN_BASIS + 3 * DCC_MAX_LEN_PRO_BYTE,
       ));
+      self.add_sync(ddl_tel);
       //Addresse in 1 oder 2 Bytes
       xor = self.add_adr(ddl_tel, adr);
       //DCC_INST_F0_F4 -> Bit 0..3 = F1..F4, Bit4 = F0
