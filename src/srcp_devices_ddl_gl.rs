@@ -564,7 +564,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           .values()
           .next()
           .unwrap();
-        let mut idle_tel = idle_protokoll.borrow().get_idle_tel();
+        let mut idle_tel = idle_protokoll.borrow_mut().get_idle_tel();
         if let Some(tel) = idle_tel.as_mut() {
           self.send_tel(tel);
         }

@@ -151,7 +151,7 @@ pub trait DdlProtokoll {
   fn get_ga_tel(&self, adr: usize, port: usize, value: bool, ddl_tel: &mut DdlTel);
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
-  fn get_idle_tel(&self) -> Option<DdlTel>;
+  fn get_idle_tel(&mut self) -> Option<DdlTel>;
   /// Liefert zusätzliche, Protokoll spzifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
   fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {

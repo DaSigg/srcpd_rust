@@ -575,7 +575,7 @@ impl DdlProtokoll for DccProtokoll {
 
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
-  fn get_idle_tel(&self) -> Option<DdlTel> {
+  fn get_idle_tel(&mut self) -> Option<DdlTel> {
     //DCC Idle Telegramm: 1111111111111111 0 11111111 0 00000000 0 11111111 1
     let mut ddl_idle_tel = DdlTel::new(
       SPI_BAUDRATE_NMRA_2,

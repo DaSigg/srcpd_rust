@@ -21,6 +21,7 @@ use std::{
 };
 
 use log::{error, info, warn};
+use splitty::split_unquoted_char;
 
 use crate::srcp_server_types::{Message, SRCPMessage};
 
@@ -236,9 +237,11 @@ fn handle_srcp_commandmode(
     }
     //Jedes Kommando muss folgendes Format haben:
     //<cmd> <busnr> <dev_group> [<param1> [<param2> ....]]
-    let cmd_parts: Vec<&str> = line.split_ascii_whitespace().collect();
-    //Empfangsque sollte leer sein.
-    //Wenn nicht, dann gab es mal mehr als eine Antwort auf eine Kommando, was nicht sein sollte.
+    let cmd_parts: Vec<&str> = split_unquoted_char(line.as_str(), ' ')
+      .unwrap_quotes(true)
+      .collect();
+    //Empfangsqueue sollte leer sein.
+    //Wenn nicht, dann gab es mal mehr als eine Antwort auf eine Kommando, was nicht sein sollte...
     while let Ok(msg) = info_rx.try_recv() {
       warn!(
         "handle_srcp_commandmode: Nicht erwartete Message in info_rx: {}",
@@ -321,7 +324,6 @@ fn handle_srcp_connection(
 /// * port - TCP Port auf dem der Server gestartet werden soll
 /// * all_cmd_tx - Alle Channel Sender für Kommandos zu den SRCP Servern. Key ist die Busnummer.
 fn srcp_server(port: u16, all_cmd_tx: &HashMap<usize, Sender<Message>>) -> ! {
-  //TODO watchdog
   let server_adr = format!("0.0.0.0:{}", port);
   info!("Start SRCP Server: {}", server_adr);
   let listener = TcpListener::bind(server_adr).expect(

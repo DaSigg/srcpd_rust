@@ -487,7 +487,7 @@ impl DdlProtokoll for MMProtokoll {
 
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
-  fn get_idle_tel(&self) -> Option<DdlTel> {
+  fn get_idle_tel(&mut self) -> Option<DdlTel> {
     //Idle Telegramm MM ist Telegramm an nie verwendete Lok Adresse 80 (GL Adresse 80 wird als eigentliche Adr 0 ausgegeben)
     let mut ddl_idle_tel = self.get_gl_new_tel();
     {

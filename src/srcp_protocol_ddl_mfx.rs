@@ -167,8 +167,9 @@ impl MfxProtokoll {
   /// crc - Aktueller CRC, resp Startwert, neuer CRC zurück
   fn crc(&self, bits: MfxBits, crc: &mut u8) {
     let mut crc_long = *crc as u32; // nicht nur 8 Bit, um Carry zu erhalten
-    for i in 0..bits.1 {
-      crc_long = (crc_long << 1) | (bits.0 >> i) & 0x01;
+    for i in (0..bits.1).rev() {
+      //MSB zuerst
+      crc_long = (crc_long << 1) | ((bits.0 >> i) & 0x01);
       if (crc_long & 0x0100) > 0 {
         crc_long = (crc_long & 0x00FF) ^ 0x07;
       }
@@ -240,25 +241,36 @@ impl MfxProtokoll {
     daten.push(values.1); //1 mit Regelverlettzung, keine Flanke zu Beginn
     daten.push(values.0);
     daten.push(values.0); //0
-                          //Zähler für Butstuffimg startet jetzt bei 0
-    self.anz_eins = 0;
+    self.anz_eins = 0; //Zähler für Bitstuffimg startet jetzt bei 0
   }
   /// Startpegel / Pause und MFX Sync. zum Tel. hinzufügen.
   /// # Arguments
   /// * ddl_tel - Telegramm, bei dem Startpegel / Pause und MFX Sync hinzugefügt werden soll
   fn add_start_sync(&mut self, ddl_tel: &mut DdlTel) {
+    let last = ddl_tel.daten.len() - 1;
     for _ in 0..(MFX_STARTSTOP_0_BIT * SPI_BYTES_PRO_BIT) {
-      ddl_tel.daten[0].push(0);
+      ddl_tel.daten[last].push(0);
     }
     self.add_sync(ddl_tel);
   }
-  /// MFX Sync. und Pause zum Abschluss des Tel. hinzufügen.
+  /// CRC und MFX Sync. und Pause zum Abschluss des Tel. hinzufügen.
   /// # Arguments
   /// * ddl_tel - Telegramm, bei dem Startpegel / Pause und MFX Sync hinzugefügt werden soll
-  fn add_ende_sync(&mut self, ddl_tel: &mut DdlTel) {
+  /// * crc - aktueller CRC berechnet bis und mit letztes Bit vor CRC.
+  fn add_crc_ende_sync(&mut self, ddl_tel: &mut DdlTel, mut crc: u8) {
+    //Abschluss der CRC Berechnung ist mit 8 Bits des CRC 0
+    self.crc((0, 8), &mut crc);
+    self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
+    //Ende Sync
     self.add_sync(ddl_tel);
+    self.add_sync(ddl_tel);
+    //Vereinzelte MFX Loks funktionieren nicht zuverlässig. Ausser:
+    //- 3. Sync am Ende
+    //- Pause nach Abschluss.
+    self.add_sync(ddl_tel);
+    let last = ddl_tel.daten.len() - 1;
     for _ in 0..(MFX_STARTSTOP_0_BIT * SPI_BYTES_PRO_BIT) {
-      ddl_tel.daten[0].push(0);
+      ddl_tel.daten[last].push(0);
     }
   }
   /// Adresse zum MFX Tel. hinzufügen
@@ -300,8 +312,7 @@ impl MfxProtokoll {
     self.add_bits(MFX_CMD_KONFIG_SID, ddl_tel, &mut crc);
     self.add_bits((adr as u32, 14), ddl_tel, &mut crc);
     self.add_bits((self.uid[adr], 32), ddl_tel, &mut crc);
-    self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
-    self.add_ende_sync(ddl_tel);
+    self.add_crc_ende_sync(ddl_tel, crc);
   }
   /// MFX Paket mit UID der Zentrale und Neuanmeldezähler versenden.
   /// # Arguments
@@ -318,8 +329,7 @@ impl MfxProtokoll {
     self.add_bits(MFX_CMD_KONFIG_UID, ddl_tel, &mut crc);
     self.add_bits((self.uid_zentrale, 32), ddl_tel, &mut crc);
     self.add_bits((self.reg_counter as u32, 16), ddl_tel, &mut crc);
-    self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
-    self.add_ende_sync(ddl_tel);
+    self.add_crc_ende_sync(ddl_tel, crc);
   }
 }
 
@@ -461,8 +471,7 @@ impl DdlProtokoll for MfxProtokoll {
       self.add_bits(MFX_CMD_FNKT_F0_F15, ddl_tel, &mut crc);
       self.add_bits((funktionen as u32, 16), ddl_tel, &mut crc);
     }
-    self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
-    self.add_ende_sync(ddl_tel);
+    self.add_crc_ende_sync(ddl_tel, crc);
     //F0 bis 15 übernehmen
     self.old_funktionen[adr] &= !0xFFFF;
     self.old_funktionen[adr] |= funktionen & 0xFFFF;
@@ -509,8 +518,7 @@ impl DdlProtokoll for MfxProtokoll {
           ddl_tel,
           &mut crc,
         );
-        self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
-        self.add_ende_sync(ddl_tel);
+        self.add_crc_ende_sync(ddl_tel, crc);
         ddl_tel.daten.push(Vec::with_capacity(MFX_MAX_LEN));
       }
     }
@@ -540,9 +548,13 @@ impl DdlProtokoll for MfxProtokoll {
 
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
-  /// MFX hat kein Idle Telegramm. Es wird periodisch die UID der Zentrale und Dekoder Abfrage gesendet
-  fn get_idle_tel(&self) -> Option<DdlTel> {
-    None
+  /// MFX hat kein Idle Telegramm. Als Idle wird UID der Zentrale und Dekoder Abfrage gesendet
+  /// Sobald eine GL vorhanden ist, wird keine Idle mehr gesendet, UID Zentrale wird dann periodisch
+  /// über get_protokoll_telegrammme im Intervall INTERVALL_UID gesendet
+  fn get_idle_tel(&mut self) -> Option<DdlTel> {
+    let mut ddl_tel = self.get_gl_new_tel();
+    self.send_uid_regcounter(&mut ddl_tel);
+    Some(ddl_tel)
   }
   /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
@@ -551,9 +563,7 @@ impl DdlProtokoll for MfxProtokoll {
     let now = Instant::now();
     if now >= (self.zeitpunkt_uid + INTERVALL_UID) {
       self.zeitpunkt_uid = now;
-      let mut ddl_tel = self.get_gl_new_tel();
-      self.send_uid_regcounter(&mut ddl_tel);
-      Some(ddl_tel)
+      self.get_idle_tel()
     } else {
       None
     }
