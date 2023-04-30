@@ -314,10 +314,10 @@ impl DdlProtokoll for DccProtokoll {
     let speed_used = if drive_mode == GLDriveMode::Nothalt {
       1
     } else {
-      if speed == 1 {
-        2
+      if speed == 0 {
+        0
       } else {
-        speed
+        speed + 1 //Und es fängt dann mit 2 an, bei 14 Steps ist max. 15, bei 28 Steps 29
       }
     };
     self.add_sync(ddl_tel);
@@ -352,8 +352,14 @@ impl DdlProtokoll for DccProtokoll {
       if speed_steps > SPEED_STEP_4BIT {
         //Kommando Fahren vorwärts oder rückwärts plus 5 Bit Speed
         //Bit0-3 -> Bit 1-4 Speed, Bit4 -> Bit 0 Speed
-        speed_byte |= TryInto::<u8>::try_into((speed_used >> 1) & 0b00001111).unwrap()
-          | TryInto::<u8>::try_into((speed_used << 4) & 0b00010000).unwrap();
+        //Bit4 ist "Zwischenschritt", Nothalt aber trotzdem 1 in Bit0-3, also eigentlich Speed 2 ... :-(
+        let speed_used_5bit = match speed_used {
+          0 => 0,
+          1 => 2,              //Nothalt
+          _ => speed_used + 2, //speed_used 2..29, geht damit von 4 bis 31, auch 3 wird noch als Nothalt interpretiert
+        };
+        speed_byte |= TryInto::<u8>::try_into((speed_used_5bit >> 1) & 0b00001111).unwrap()
+          | TryInto::<u8>::try_into((speed_used_5bit << 4) & 0b00010000).unwrap();
       } else {
         //Kommando Fahren vorwärts oder rückwärts plus 4 Bit Speed
         //Bit0-3 -> Bit 0-3 Speed

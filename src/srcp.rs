@@ -237,6 +237,14 @@ fn handle_srcp_commandmode(
     //Jedes Kommando muss folgendes Format haben:
     //<cmd> <busnr> <dev_group> [<param1> [<param2> ....]]
     let cmd_parts: Vec<&str> = line.split_ascii_whitespace().collect();
+    //Empfangsque sollte leer sein.
+    //Wenn nicht, dann gab es mal mehr als eine Antwort auf eine Kommando, was nicht sein sollte.
+    while let Ok(msg) = info_rx.try_recv() {
+      warn!(
+        "handle_srcp_commandmode: Nicht erwartete Message in info_rx: {}",
+        msg.to_string()
+      );
+    }
     //Kommando Auswerten
     match SRCPMessage::from(session_id, &cmd_parts) {
       Ok(srcp_msg) => {

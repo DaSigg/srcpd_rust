@@ -229,7 +229,9 @@ impl DdlGL<'_> {
       self.send(self.spidev, ddl_tel);
 
       //Direktes weitersenden wenn nicht genügend GL's vorhanden sind oder wenn kein Delay verlangt wird.
-      if (self.all_gl.len() < MIN_ANZ_GL_NO_DELAY) || ddl_tel.delay.is_zero() {
+      if (ddl_tel.daten.len() > 0)
+        && ((self.all_gl.len() < MIN_ANZ_GL_NO_DELAY) || ddl_tel.delay.is_zero())
+      {
         if !ddl_tel.delay.is_zero() {
           thread::sleep(ddl_tel.delay);
         }
@@ -316,9 +318,6 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                             break;
                           }
                         }
-                        if result {
-                          self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
-                        }
                       } else {
                         self
                           .tx
@@ -400,6 +399,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                   }
                 }
               }
+              //OK wird bei SET bereits in Validate gesendet da SET Kommando bei Power Off zuerst in die Queue kommt.
               if result {
                 self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
               }
@@ -489,12 +489,14 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           //MM Protokoll wird erst ab 2 GL's aus Idle genommen.
           //Grund: wenn MM Dekoder nur ihre eigene Adresse und gar nichts anderes sehen können sie nach Power Up
           //in den MM Programmiermodus gehen ... :-(
+          //Auch DCC wird erst ab 2 GL's aus Idle genommen.
+          //Grund: 5ms Verzögerung von einem GL bis zum nächsten mit selber Adresse.
           let mut idle = true;
-          if protokoll == DdlProtokolle::Maerklin {
+          if (protokoll == DdlProtokolle::Maerklin) || (protokoll == DdlProtokolle::Dcc) {
             idle = false;
             let mut count = 0;
             for (_, gl) in &self.all_gl {
-              if gl.protokoll == DdlProtokolle::Maerklin {
+              if (gl.protokoll == DdlProtokolle::Maerklin) || (gl.protokoll == DdlProtokolle::Dcc) {
                 count += 1;
                 if count >= 2 {
                   idle = true;
@@ -529,8 +531,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           }
         }
         self.send_gl(adr, drivemode, v, v_max, funktionen, false);
-        //OK an diese Session
-        self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
+        //OK an diese Session wurde bei Validate bereits gesendet da SET ohne POWER zuerst in Queue kommt.
       }
     };
   }
