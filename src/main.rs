@@ -5,14 +5,21 @@
 //! 25.03.23 Basisversion
 
 use configparser::ini::Ini;
-use log::{error, info};
-use nix::unistd::{fork, ForkResult::Parent};
+use log::{error, info, warn};
+use nix::{
+  libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM},
+  unistd::{fork, ForkResult::Parent},
+};
+use signal_hook::iterator::Signals;
+use srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType};
 use std::{
   cell::RefCell,
   collections::HashMap,
-  env,
+  env, process,
   rc::Rc,
   sync::mpsc::{self, Sender},
+  thread,
+  time::Duration,
 };
 
 use crate::{srcp_server_ddl::DDL, srcp_server_s88::S88, srcp_server_types::Message};
@@ -95,6 +102,35 @@ fn main() {
   env_logger::init();
   if let Err(msg) = start(env::args()) {
     error!("Start Error: {}", msg);
+  }
+}
+
+/// Power Off für alle vorhandenen Busse wenn Programm terminiert wird
+/// # Arguments
+/// * all_cmd_tx - alle Sender für alle vorhandene SRCP Server
+fn terminate_poweroff(all_cmd_tx: HashMap<usize, Sender<Message>>) {
+  let mut signals = Signals::new(&[SIGTERM, SIGINT, SIGHUP, SIGQUIT]).unwrap();
+  for _ in signals.forever() {
+    //Allen SRCP Server Power Off senden
+    for (bus, server) in all_cmd_tx {
+      if server
+        .send(Message::new_srcpmessage(SRCPMessage::new(
+          Some(0),
+          bus,
+          SRCPMessageID::Command {
+            msg_type: (SRCPMessageType::SET),
+          },
+          SRCPMessageDevice::Power,
+          vec!["OFF".to_string()],
+        )))
+        .is_err()
+      {
+        warn!("Terminate Send Power Off fail");
+      }
+    }
+    //Kurze Pause damit alles ausgeschaltet werden kann
+    thread::sleep(Duration::from_millis(200));
+    process::exit(0);
   }
 }
 
@@ -201,6 +237,14 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
       }
     }
   }
+  //Sicherstellung Power Ausschalten wenn Programm terminiert wird
+  let all_cmd_tx_copy = all_cmd_tx.clone();
+  thread::Builder::new()
+    .name("Cleanup".to_string())
+    .spawn(move || {
+      terminate_poweroff(all_cmd_tx_copy);
+    })
+    .unwrap();
 
   //Start srcp Server
   srcp::startup(&config_file_values, info_rx, &all_cmd_tx)
