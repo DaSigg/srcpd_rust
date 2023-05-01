@@ -10,14 +10,17 @@ pub enum SRCPMessageType {
   GET,
   SET,
   INIT,
+  TERM,
 }
 impl ToString for SRCPMessageType {
   fn to_string(&self) -> String {
     match &self {
-      SRCPMessageType::GET => "GET".to_string(),
-      SRCPMessageType::SET => "SET".to_string(),
-      SRCPMessageType::INIT => "INIT".to_string(),
+      SRCPMessageType::GET => "GET",
+      SRCPMessageType::SET => "SET",
+      SRCPMessageType::INIT => "INIT",
+      SRCPMessageType::TERM => "TERM",
     }
+    .to_string()
   }
 }
 
@@ -168,6 +171,7 @@ impl SRCPMessage {
           "GET" => SRCPMessageType::GET,
           "SET" => SRCPMessageType::SET,
           "INIT" => SRCPMessageType::INIT,
+          "TERM" => SRCPMessageType::TERM,
           &_ => return Err(("410", "unknown command")),
         },
       },

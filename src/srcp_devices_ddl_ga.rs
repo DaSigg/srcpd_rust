@@ -162,7 +162,7 @@ impl DdlGA<'_> {
     let protokoll = self.all_ga[&adr].protokoll;
     //Zum Booster Versenden, erstes passendes Protokoll verwenden, keine Versionsangabe für GA
     let protokoll = self.all_protokolle[&protokoll].values().next().unwrap();
-    let mut ddl_tel = protokoll.borrow().get_ga_new_tel();
+    let mut ddl_tel = protokoll.borrow().get_ga_new_tel(adr);
     protokoll
       .borrow_mut()
       .get_ga_tel(adr, port, value, &mut ddl_tel);
@@ -238,6 +238,27 @@ impl SRCPDeviceDDL for DdlGA<'_> {
               .unwrap();
           }
         }
+        SRCPMessageType::TERM => {
+          //Format ist TERM <bus> GA <addr>
+          //Adressprüfung
+          if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+            if self.all_ga.contains_key(&adr) {
+              //OK an diese Session
+              self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
+              result = true;
+            } else {
+              self
+                .tx
+                .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+                .unwrap();
+            }
+          } else {
+            self
+              .tx
+              .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+              .unwrap();
+          }
+        }
         SRCPMessageType::GET => {
           //Format ist GET <bus> GA <addr> <port>
           if self.validate_get_set(cmd_msg, 2) {
@@ -296,6 +317,12 @@ impl SRCPDeviceDDL for DdlGA<'_> {
           ))
           .unwrap();
       }
+      SRCPMessageType::TERM => {
+        //Format ist TERM <bus> GA <addr>
+        //Adresse
+        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        self.all_ga.remove(&adr);
+      }
       SRCPMessageType::GET => {
         //Format ist GET <bus> GA <addr> <port>
         let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
@@ -306,18 +333,21 @@ impl SRCPDeviceDDL for DdlGA<'_> {
       }
       SRCPMessageType::SET => {
         let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
-        let port = cmd_msg.parameter[1].parse::<usize>().unwrap();
-        let value = cmd_msg.parameter[2] == "1";
-        self.send_ga(adr, port, value);
-        let switch_off_timeout = cmd_msg.parameter[3].parse::<i16>().unwrap();
-        if switch_off_timeout > 0 {
-          //In Verwaltung zur automatischen Ausschaltung übernehmen
-          self.all_ga_auto_off.push(GAAutoOff {
-            adr,
-            port,
-            off_zeit: Instant::now()
-              + Duration::from_millis(switch_off_timeout.try_into().unwrap()),
-          });
+        //Da SET verzögert über Queue ausgeführt wird könnte ein TERM dazwischen gekommen sein, Adresse nochmals prüfen
+        if self.all_ga.contains_key(&adr) {
+          let port = cmd_msg.parameter[1].parse::<usize>().unwrap();
+          let value = cmd_msg.parameter[2] == "1";
+          self.send_ga(adr, port, value);
+          let switch_off_timeout = cmd_msg.parameter[3].parse::<i16>().unwrap();
+          if switch_off_timeout > 0 {
+            //In Verwaltung zur automatischen Ausschaltung übernehmen
+            self.all_ga_auto_off.push(GAAutoOff {
+              adr,
+              port,
+              off_zeit: Instant::now()
+                + Duration::from_millis(switch_off_timeout.try_into().unwrap()),
+            });
+          }
         }
       }
     };

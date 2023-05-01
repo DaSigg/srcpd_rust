@@ -3,8 +3,15 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
 /// Telegramm zum senden über SPI
 #[derive(Debug, Clone)]
 pub struct DdlTel {
+  /// Nur zu Debugzwecken: Adresse (GL oder GA)
+  pub adr: usize,
   /// Die Baudrate mit der gesendet werden muss
   pub hz: u32,
+  /// Notwendige Pause vor Paket. MUSS zusätzlich gemacht werden
+  pub pause_start: Duration,
+  /// Notwendige Pause nach Paket. Ist in Daten enthalten, dient hier zur Information
+  /// um eine allfällige folgende Startpause optimieren zu können
+  pub pause_ende: Duration,
   /// Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm.
   pub delay: Duration,
   /// Die Bytes die gesendet werden müssen
@@ -19,10 +26,19 @@ impl DdlTel {
   /// Neue Instanz Erstellen
   /// # Arguments
   /// * hz - Zur Ausgane über SPI notwendige Baurate
+  /// * pause_start - Notwendige Pause vor Paket.
+  /// * pause_ende - Information Pause nach Paket die bereits in "daten" enthalten ist.
+  /// * delay - Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm wenn in "daten" mehr als ein Telegramm vorhanden ist.
   /// * capacity - Initiale reservierte Grösse für Nutzdaten im ersten erstellten Telegramm
-  pub fn new(hz: u32, delay: Duration, capacity: usize) -> DdlTel {
+  pub fn new(
+    adr: usize, hz: u32, pause_start: Duration, pause_ende: Duration, delay: Duration,
+    capacity: usize,
+  ) -> DdlTel {
     DdlTel {
+      adr,
       hz,
+      pause_start,
+      pause_ende,
       delay,
       daten: vec![Vec::with_capacity(capacity)],
     }
@@ -115,7 +131,9 @@ pub trait DdlProtokoll {
   /// Muss immer <= "get_Anz_F" sein.
   fn get_gl_anz_f_basis(&self) -> usize;
   /// Liefert ein leeres GL Telegramm zur Verwendung in "get_gl_basis_tel" und / oder "get_gl_zusatz_tel".
-  fn get_gl_new_tel(&self) -> DdlTel;
+  /// # Arguments
+  /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
+  fn get_gl_new_tel(&self, adr: usize) -> DdlTel;
   /// Erzeugt das Basis Telegramm für GL.
   /// - Fahren
   /// - Basisfunktionen F0 bis "get_Anz_F_Basis". Es wedren hier nur diese Funktionen übernommen!
@@ -141,7 +159,9 @@ pub trait DdlProtokoll {
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_gl_zusatz_tel(&mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel);
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
-  fn get_ga_new_tel(&self) -> DdlTel;
+  /// # Arguments
+  /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
+  fn get_ga_new_tel(&self, adr: usize) -> DdlTel;
   /// Erzeugt ein GA Telegramm
   /// # Arguments
   /// * adr - Adresse des Schaltdekoders

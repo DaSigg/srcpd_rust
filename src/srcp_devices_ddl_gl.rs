@@ -14,6 +14,10 @@ use crate::{
 /// Refreshzyklus abzubauen.
 /// Theoretischer Worst Case: DCC Lok mit 64 Funktionen könnte zu 11 Telegrammen führen
 const MIN_ANZ_GL_NO_DELAY: usize = 15;
+/// Anzahl GL's die MM oder DCC verwenden müssen, damit das Protokoll nicht mehr als Idle gilt.
+/// Grund: Bei DCC die Möglichkeit haben 5ms Verzögerungen zu machen, bei MM darf nicht nur eine
+/// MM Adresse vorhanden sein wegen Dekoder Prog. Modus.
+const IDLE_COUNT_MM_DCC: usize = 2;
 
 ///Verwaltung einer initialisierten GL's
 struct GLInit {
@@ -204,7 +208,7 @@ impl DdlGL<'_> {
       .unwrap()
       .borrow_mut();
     //Basis GL Telegram erzeugen und zum Booster Versenden
-    let mut ddl_tel = protokoll.get_gl_new_tel();
+    let mut ddl_tel = protokoll.get_gl_new_tel(adr);
     protokoll.get_gl_basis_tel(
       adr,
       gl.direction,
@@ -271,6 +275,19 @@ impl DdlGL<'_> {
     if tel_aus_buffer.is_some() {
       self.send_tel(tel_aus_buffer.as_mut().unwrap());
     }
+  }
+
+  /// Ermittlung, durch wievile GL's ein Protokoll verwendet wird
+  /// # Arguments
+  /// * protokoll - Das Protokoll, das gesucht werden soll.
+  fn count_protokoll(&self, protokoll: DdlProtokolle) -> usize {
+    let mut count = 0;
+    for (_, gl) in &self.all_gl {
+      if gl.protokoll == protokoll {
+        count += 1;
+      }
+    }
+    count
   }
 }
 
@@ -365,6 +382,27 @@ impl SRCPDeviceDDL for DdlGL<'_> {
             self
               .tx
               .send(SRCPMessage::new_err(cmd_msg, "419", "list too short"))
+              .unwrap();
+          }
+        }
+        SRCPMessageType::TERM => {
+          //Format ist TERM <bus> GL <addr>
+          //Adressprüfung
+          if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+            if self.all_gl.contains_key(&adr) {
+              //OK an diese Session
+              self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
+              result = true;
+            } else {
+              self
+                .tx
+                .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+                .unwrap();
+            }
+          } else {
+            self
+              .tx
+              .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
               .unwrap();
           }
         }
@@ -493,20 +531,28 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           //Grund: 5ms Verzögerung von einem GL bis zum nächsten mit selber Adresse.
           let mut idle = true;
           if (protokoll == DdlProtokolle::Maerklin) || (protokoll == DdlProtokolle::Dcc) {
-            idle = false;
-            let mut count = 0;
-            for (_, gl) in &self.all_gl {
-              if (gl.protokoll == DdlProtokolle::Maerklin) || (gl.protokoll == DdlProtokolle::Dcc) {
-                count += 1;
-                if count >= 2 {
-                  idle = true;
-                  break;
-                }
-              }
-            }
+            idle = self.count_protokoll(protokoll) >= IDLE_COUNT_MM_DCC;
           }
           if idle {
             self.all_idle_protokolle.remove(i);
+          }
+        }
+      }
+      SRCPMessageType::TERM => {
+        //Format ist TERM <bus> GL <addr>
+        //Adresse
+        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let protokoll = self.all_gl.remove(&adr).unwrap().protokoll;
+        //Ein Protokoll könnte wieder Idle geworden sein.
+        //Märklin & DCC bei < 2, siehe oben
+        let prot_count = self.count_protokoll(protokoll);
+        if (prot_count == 0)
+          || (((protokoll == DdlProtokolle::Maerklin) || (protokoll == DdlProtokolle::Dcc))
+            && (prot_count < IDLE_COUNT_MM_DCC))
+        {
+          //Es ist Idle
+          if !self.all_idle_protokolle.contains(&protokoll) {
+            self.all_idle_protokolle.push(protokoll);
           }
         }
       }
@@ -519,19 +565,22 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       SRCPMessageType::SET => {
         //Format ist SET <bus> GL <addr> <drivemode> <V> <V_max> <f0> . . <fn>
         let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
-        let drivemode = GLDriveMode::from_str(cmd_msg.parameter[1].as_str()).unwrap();
-        let v = cmd_msg.parameter[2].parse::<usize>().unwrap();
-        let v_max = cmd_msg.parameter[3].parse::<usize>().unwrap();
-        let mut funktionen: u64 = 0;
-        if cmd_msg.parameter.len() > 4 {
-          for i in 4..cmd_msg.parameter.len() {
-            if cmd_msg.parameter[i] == "1" {
-              funktionen |= 1 << (i - 4);
+        //Da SET verzögert über Queue ausgeführt wird könnte ein TERM dazwischen gekommen sein, Adresse nochmals prüfen
+        if self.all_gl.contains_key(&adr) {
+          let drivemode = GLDriveMode::from_str(cmd_msg.parameter[1].as_str()).unwrap();
+          let v = cmd_msg.parameter[2].parse::<usize>().unwrap();
+          let v_max = cmd_msg.parameter[3].parse::<usize>().unwrap();
+          let mut funktionen: u64 = 0;
+          if cmd_msg.parameter.len() > 4 {
+            for i in 4..cmd_msg.parameter.len() {
+              if cmd_msg.parameter[i] == "1" {
+                funktionen |= 1 << (i - 4);
+              }
             }
           }
+          self.send_gl(adr, drivemode, v, v_max, funktionen, false);
+          //OK an diese Session wurde bei Validate bereits gesendet da SET ohne POWER zuerst in Queue kommt.
         }
-        self.send_gl(adr, drivemode, v, v_max, funktionen, false);
-        //OK an diese Session wurde bei Validate bereits gesendet da SET ohne POWER zuerst in Queue kommt.
       }
     };
   }

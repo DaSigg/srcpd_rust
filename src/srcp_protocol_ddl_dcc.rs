@@ -238,6 +238,12 @@ impl DccProtokoll {
       self.add_sync(ddl_tel);
       let mut xor = self.add_adr(ddl_tel, adr);
       self.add_byte(ddl_tel, ddl_cmd, &mut xor);
+      //Nach einem Byte abschliessendes 0
+      ddl_tel
+        .daten
+        .last_mut()
+        .unwrap()
+        .extend_from_slice(DCC_BIT_0);
       let f = <u64 as TryInto<u8>>::try_into((funktionen & mask) >> shift).unwrap();
       self.add_byte(ddl_tel, f, &mut xor);
       self.add_xor(ddl_tel, &mut xor);
@@ -277,9 +283,14 @@ impl DdlProtokoll for DccProtokoll {
   }
   /// Liefert ein leeres GL Telegramm zur Verwendung in "get_gl_basis_tel" und / oder "get_gl_zusatz_tel".
   /// Als Initiale Kapazitäte wird von einem 4 Byte (lange Adresse plus 2 Nutzbytes) DCC Telegramm ausgegangen.
-  fn get_gl_new_tel(&self) -> DdlTel {
+  /// # Arguments
+  /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
+  fn get_gl_new_tel(&self, adr: usize) -> DdlTel {
     DdlTel::new(
+      adr,
       SPI_BAUDRATE_NMRA_2,
+      Duration::ZERO,
+      Duration::ZERO,
       DCC_DELAY_GLEICHE_ADR,
       DCC_MAX_LEN_BASIS + 4 * DCC_MAX_LEN_PRO_BYTE,
     )
@@ -525,9 +536,14 @@ impl DdlProtokoll for DccProtokoll {
     self.old_funktionen[adr] |= funktionen & !0b11111;
   }
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
-  fn get_ga_new_tel(&self) -> DdlTel {
+  /// # Arguments
+  /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
+  fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
     DdlTel::new(
+      adr,
       SPI_BAUDRATE_NMRA_2,
+      Duration::ZERO,
+      Duration::ZERO,
       DCC_DELAY_GLEICHE_ADR,
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
     )
@@ -578,7 +594,10 @@ impl DdlProtokoll for DccProtokoll {
   fn get_idle_tel(&mut self) -> Option<DdlTel> {
     //DCC Idle Telegramm: 1111111111111111 0 11111111 0 00000000 0 11111111 1
     let mut ddl_idle_tel = DdlTel::new(
+      0,
       SPI_BAUDRATE_NMRA_2,
+      Duration::ZERO,
+      Duration::ZERO,
       Duration::ZERO, //Nicht notwendig für Idle Tel.
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
     );

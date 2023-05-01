@@ -1,6 +1,11 @@
+use std::{thread, time::Duration};
+
 use spidev::{Spidev, SpidevTransfer};
 
 use crate::{srcp_protocol_ddl::DdlTel, srcp_server_types::SRCPMessage};
+
+/// Letzte Pause nach einem Telegramme. Gilt für alle Instanzen "SRCPDeviceDDL".
+static mut LETZTE_PAUSE: Duration = Duration::ZERO;
 
 /// Schnittstelle für alle Devices die in einem SRCP DDL Server bearbeitet werden
 pub trait SRCPDeviceDDL {
@@ -38,6 +43,17 @@ pub trait SRCPDeviceDDL {
       ddl_tel.daten.len() > 0,
       "Aufruf SRCPDeviceDDL::send mit leerem ddl_tel"
     );
+    let mut pause = Duration::ZERO;
+    unsafe {
+      //Zugriff erfolgt nur aus einem Thread, also OK
+      if LETZTE_PAUSE < ddl_tel.pause_start {
+        //Es ist noch eine Pause zum Start notwendig
+        pause = ddl_tel.pause_start - LETZTE_PAUSE;
+      }
+    }
+    if !pause.is_zero() {
+      thread::sleep(pause);
+    }
     let mut transfer = SpidevTransfer::write(ddl_tel.daten[0].as_slice());
     transfer.speed_hz = ddl_tel.hz;
     spidev
@@ -47,5 +63,9 @@ pub trait SRCPDeviceDDL {
       .expect("DDL SPI write fail");
     //Und jetzt löschen was gesendet wurde
     ddl_tel.daten.remove(0);
+    unsafe {
+      //Zugriff erfolgt nur aus einem Thread, also OK
+      LETZTE_PAUSE = ddl_tel.pause_ende;
+    }
   }
 }
