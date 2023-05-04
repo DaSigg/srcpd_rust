@@ -2,35 +2,35 @@ use std::time::Duration;
 
 use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
 
-//SPI Baudrate für Märklin / Motorola Protokoll.
-//Diese wäre eigentlich genau 38461 Baud (1 Bit=26us, 1Byte=208us)
+/// SPI Baudrate für Märklin / Motorola Protokoll.
+/// Diese wäre eigentlich genau 38461 Baud (1 Bit=26us, 1Byte=208us)
 const SPI_BAUDRATE_MAERKLIN_LOCO: u32 = 38461;
-//Nun macht der RaspberryPI aber leider nach jedem Byte Transfer auf dem SPI Bus 1 Bit Pause :-(
-//Er macht diese 1 Bit / Clk Pause nicht mehr im DMA Mode. DMA wird ab Transfers
-//von 96 Bytes verwendet (hoffe, das bleibt so ...).
-//Um Märklin / Motorola Pakete auf 96 rauf zu bringen, wird folgendes gemacht:
-//- die Baudrate Doppelt so gewählt wie notwendig (2 * 38461 für Loks)
-//- die Wiederholung ins selbe Paket gepackt.
-//- Pause am Anfang und vor Wiederholung mit 0 Bytes gefüllt.
+/// Nun macht der RaspberryPI aber leider nach jedem Byte Transfer auf dem SPI Bus 1 Bit Pause :-(
+/// Er macht diese 1 Bit / Clk Pause nicht mehr im DMA Mode. DMA wird ab Transfers
+/// von 96 Bytes verwendet (hoffe, das bleibt so ...).
+/// Um Märklin / Motorola Pakete auf 96 rauf zu bringen, wird folgendes gemacht:
+/// - die Baudrate Doppelt so gewählt wie notwendig (2 * 38461 für Loks)
+/// - die Wiederholung ins selbe Paket gepackt.
+/// - Pause am Anfang und vor Wiederholung mit 0 Bytes gefüllt.
 pub const SPI_BAUDRATE_MAERKLIN_LOCO_2: u32 = 2 * SPI_BAUDRATE_MAERKLIN_LOCO;
 const SPI_BAUDRATE_MAERKLIN_FUNC_2: u32 = 2 * SPI_BAUDRATE_MAERKLIN_LOCO_2;
-//Für Märklin Motorola wird wie folgt kodiert (doppelte Baudrate):
-//- Paket mit
-//  - 0 -> 0xC0, 0x00, ich habe aber Schaltdekoder, die damit nicht funktionieren sondern einen ein wenig längeren Impuls wollen, also 0xE0, 0x00 ....
-//  - 1 -> 0xFF, 0xFC
-//  -> 18 * 2 = 36 Bytes
+/// Für Märklin Motorola wird wie folgt kodiert (doppelte Baudrate):
+/// - Paket mit
+///  - 0 -> 0xC0, 0x00, ich habe aber Schaltdekoder, die damit nicht funktionieren sondern einen ein wenig längeren Impuls wollen, also 0xE0, 0x00 ....
+///  - 1 -> 0xFF, 0xFC
+///  -> 18 * 2 = 36 Bytes
 const MM_LEN_PAKET: usize = 18 * 2;
-//- 0 Bytes für Pause zwischen Paketen: 3 * (t 2 Bit, 208us / 416us) -> wegen doppelter Baudrate also 2 * 3 * 2 = 12 Bytes 0x00
+/// - 0 Bytes für Pause zwischen Paketen: 3 * (t 2 Bit, 208us / 416us) -> wegen doppelter Baudrate also 2 * 3 * 2 = 12 Bytes 0x00
 const MM_LEN_PAUSE_BETWEEN: usize = 2 * 3 * 2;
-//- Paket Wiederholung
-//- 0 Bytes für Pause nach Paket: 4.2ms (Lok), resp. 2.1ms (Schaltdekoder) -> wegen bei doppleter Baudrate 1 Byte 104us (Lok). 62us (Schalt) = 42 Bytes
+/// - Paket Wiederholung
+/// - 0 Bytes für Pause nach Paket: 4.2ms (Lok), resp. 2.1ms (Schaltdekoder) -> wegen bei doppleter Baudrate 1 Byte 104us (Lok). 62us (Schalt) = 42 Bytes
 const MM_LEN_PAUSE_END: usize = 42;
-//Pause am Anfang/Ende (Anfang nur, falls vorher keine Pause war)
+/// Pause am Anfang/Ende (Anfang nur, falls vorher keine Pause war)
 const MM_PAUSE_GA: Duration = Duration::from_micros(2100);
 const MM_PAUSE_GL: Duration = Duration::from_micros(4200);
-//Total also 36 + 12 + 36 + 42 = 126 Bytes -> DMA Mode!
+/// Total also 36 + 12 + 36 + 42 = 126 Bytes -> DMA Mode!
 const MM_LEN: usize = MM_LEN_PAKET + MM_LEN_PAUSE_BETWEEN + MM_LEN_PAKET + MM_LEN_PAUSE_END;
-// Mit doppelter Baudrate je die beiden Bytes für 0 und 1 Übertragung
+/// Mit doppelter Baudrate je die beiden Bytes für 0 und 1 Übertragung
 const MM_BIT_0_0: u8 = 0xC0;
 const MM_BIT_0_0_GA: u8 = 0xE0; //Eigentlich wäre das obige 0xC0 korrekt, habe aber Schaltdekoder die damit nicht funktionieren....
 const MM_BIT_0_1: u8 = 0x00;
@@ -45,19 +45,22 @@ static MM_BIT_L_GA: &'static [u8] = &[MM_BIT_0_0_GA, MM_BIT_0_1, MM_BIT_0_0_GA, 
 static MM_BIT_O_GA: &'static [u8] = &[MM_BIT_1_0, MM_BIT_1_1, MM_BIT_0_0_GA, MM_BIT_0_1]; //10 für GA, siehe oben
 static MM_BIT_U: &'static [u8] = &[MM_BIT_0_0, MM_BIT_0_1, MM_BIT_1_0, MM_BIT_1_1]; //01
 
-// MM2 & 3 Bitmuster für F1-4, Bit 3 ist jeweils der Zustand der Funktion
+/// MM2 & 3 Bitmuster für F1-4, Bit 3 ist jeweils der Zustand der Funktion
 static MM_F1_4: &'static [u8] = &[0b0011, 0b0100, 0b0110, 0b0111];
 
-//Max. erlaubte Dekoder Adresse (GA und GL)
+/// Pause zwischen zwei Speed Paketen für MM5 (nur für MM5 relevant)
+const MM_PAUSE_MM5: Duration = Duration::from_millis(50);
+/// Max. erlaubte Dekoder Adresse (GA und GL)
 const MAX_MM_ADRESSE: usize = 80;
-//Max. erlaubte GA Adresse (4 GA per Dekoder)
+/// Max. erlaubte GA Adresse (4 GA per Dekoder)
 const MAX_MM_GA_ADRESSE: usize = (MAX_MM_ADRESSE + 1) * 4;
 /// Implementierung Märklin Motorola Protokoll V1 & 2
 #[derive(PartialEq, Copy, Clone)]
 pub enum MmVersion {
   V1, //14 v Stufen, F0, relative Richtung
   V2, //14 v Stufen, F0-4, absolute Richtung
-  V3, //28 v Stufen, F0-4, absolute Richtung
+  V3, //28 v Stufen mit Halbstufe über 2. Bit F0, F0-4, absolute Richtung
+  V5, //28 v Stufen über Senden 2 benachbarte Stufen kurz nacheinander, F0-4, absolute Richtung
 }
 pub struct MMProtokoll {
   /// Version 1 oder 2, Keine Unterschiede für GA, nur für GL 14 / 28 Fahrstufen, 1 oder 5 Funktionen
@@ -297,7 +300,7 @@ impl MMProtokoll {
         );
       }
       MmVersion::V3 => {
-        //28 Speeds, F0-4, abs. Richtung, analog V2, zusätzlicher Speed Schritt über 2. Bit F0
+        //28 Speeds, Halbschritt über 2. Bit F0, F0-4, abs. Richtung, analog V2, zusätzlicher Speed Schritt über 2. Bit F0
         //Max Speed Kontrolle
         if speed_used > 28 {
           speed_used = 28;
@@ -327,6 +330,82 @@ impl MMProtokoll {
           drive_mode_used,
         );
       }
+      MmVersion::V5 => {
+        //28 Speeds mittels Senden 2 benachbarte Steps nacheinander, F0-4, abs. Richtung, analog V2, zusätzlicher Speed Schritt über 2. Bit F0
+        //Max Speed Kontrolle
+        if speed_used > 28 {
+          speed_used = 28;
+        }
+        /* xFS    rFS   sFS1 -> (50ms)  -> sFS2
+          0      0      0                  %
+
+          2      2      0                  2
+          3    2.5      3                  2
+          4      3      2                  3
+          5    3.5      4                  3
+          6      4      3                  4
+          7    4.5      5                  4
+          8      5      4                  5
+          9    5.5      6                  5
+          10     6      5                  6
+          11   6.5      7                  6
+          12     7      6                  7
+          13   7.5      8                  7
+          14     8      7                  8
+          15   8.5      9                  8
+          16     9      8                  9
+          17   9.5     10                  9
+          18    10      9                 10
+          19  10.5     11                 10
+          20    11     10                 11
+          21  11.5     12                 11
+          22    12     11                 12
+          23  12.5     13                 12
+          24    13     12                 13
+          25  13.5     14                 13
+          26    14     13                 14
+          27  14.5     15                 14
+          28    15     14                 15
+        */
+        let speed_full_step = if speed_used == 0 {
+          0
+        } else {
+          (speed_used / 2) + 1
+        }; //Ergibt 0, 2..15
+        let speed_half_step = match speed_used {
+          0 => None,
+          2 => Some(0),
+          _ => Some(if (speed_used % 2) == 0 {
+            speed_full_step - 1
+          } else {
+            speed_full_step + 1
+          }),
+        };
+        //Fahren mit abs. Richtung
+        if let Some(speed_half) = speed_half_step {
+          self.add_mm2_fnkt_value(
+            ddl_tel,
+            if (funktionen & 0x01) != 0 {
+              MM_BIT_H
+            } else {
+              MM_BIT_L
+            }, //F0
+            speed_half,
+            drive_mode_used,
+          );
+          ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
+        }
+        self.add_mm2_fnkt_value(
+          ddl_tel,
+          if (funktionen & 0x01) != 0 {
+            MM_BIT_H
+          } else {
+            MM_BIT_L
+          }, //F0
+          speed_full_step,
+          drive_mode_used,
+        );
+      }
     }
     self.old_drive_mode[adr] = drive_mode_used;
     self.old_speed[adr] = speed_used;
@@ -335,7 +414,7 @@ impl MMProtokoll {
     self.old_funktionen[adr] |= funktionen & 1; //und neu übernehmen löschen
   }
 
-  /// MM Paket vervollständigen:
+  /// MM Paket vervollständigen (für alle telegramme, falls mehrere vorhanden sind):
   /// - Pause zwischen den beiden Paketen
   /// - Paketwiederholung
   /// - Pause am Schluss
@@ -374,6 +453,7 @@ impl DdlProtokoll for MMProtokoll {
       MmVersion::V1 => 1, //V1 nur F0
       MmVersion::V2 => 5, //V2 F0-F4
       MmVersion::V3 => 5, //V3 F0-F4
+      MmVersion::V5 => 5, //V5 F0-F4
     }
   }
   /// Liefert die Anzahl Funktionen (inkl. F0) die im Basistelegramm enthalten sind
@@ -391,7 +471,7 @@ impl DdlProtokoll for MMProtokoll {
       SPI_BAUDRATE_MAERKLIN_LOCO_2,
       MM_PAUSE_GL,
       MM_PAUSE_GL,
-      Duration::ZERO,
+      MM_PAUSE_MM5,
       MM_LEN,
     )
   }

@@ -106,6 +106,8 @@ impl DDL {
       mm_protocols.insert("2", Rc::new(RefCell::new(MMProtokoll::from(MmVersion::V2))));
       //MM V3
       mm_protocols.insert("3", Rc::new(RefCell::new(MMProtokoll::from(MmVersion::V3))));
+      //MM V5
+      mm_protocols.insert("5", Rc::new(RefCell::new(MMProtokoll::from(MmVersion::V5))));
       all_protocols.insert(DdlProtokolle::Maerklin, mm_protocols);
     }
     if self.dcc_enabled {
