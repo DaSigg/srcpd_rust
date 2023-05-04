@@ -172,26 +172,14 @@ impl MMProtokoll {
   /// MM2 Payload 5 Bits, 1 Bit Funktion und 4 Bits Speed
   /// # Arguments
   /// * ddl_tel - Telegramm, zu dessen letztem Tel. die Adressbits hinzugefügtw erden sollen
-  /// * fnkt - true: Funktionsbit 1, false für 0
+  /// * fnkt - Funktionsbit MM1&2:  oder MM_BIT_L, MM3 antivalent für Speed-Halfstep, erstes Bit Funktion
   /// * speed - 4 Bit Value, LSB wird zuerst gesendet
   /// * dir - Fahrtrichtung, Rückwärts wird ausgewertet, alles andere ist Vorwärts
   fn add_mm2_fnkt_value(
-    &self, ddl_tel: &mut DdlTel, fnkt: bool, mut speed: usize, dir: GLDriveMode,
+    &self, ddl_tel: &mut DdlTel, fnkt: &[u8], mut speed: usize, dir: GLDriveMode,
   ) {
     //Zuerst kommt die Funktion
-    if fnkt {
-      ddl_tel
-        .daten
-        .last_mut()
-        .unwrap()
-        .extend_from_slice(MM_BIT_H);
-    } else {
-      ddl_tel
-        .daten
-        .last_mut()
-        .unwrap()
-        .extend_from_slice(MM_BIT_L);
-    }
+    ddl_tel.daten.last_mut().unwrap().extend_from_slice(fnkt);
     //Bei MM2 wird nur je ein Bit des Paares für die Geschwindigkeit verwendet,
     //das andere für die absolute Richtungsinfo.
     //Parallel zum Speed kodieren wir hier die abs. Richtungsbits
@@ -268,8 +256,8 @@ impl MMProtokoll {
       drive_mode_used = self.old_drive_mode[adr];
       speed_used = 0;
     }
-    if speed_used == 1 {
-      speed_used = 2; //Speed 1 ist Richtungswechsel
+    if speed_used > 0 {
+      speed_used += 1; //Speed 1 ist Richtungswechsel, mit Speed 1..14 sind wir damit bei 2..15, mit 1..28 bei 2..29
     }
     self.add_mm_adr(ddl_tel, adr, false);
     match version {
@@ -299,7 +287,11 @@ impl MMProtokoll {
         //Fahren mit abs. Richtung
         self.add_mm2_fnkt_value(
           ddl_tel,
-          (funktionen & 0x01) != 0, //F0
+          if (funktionen & 0x01) != 0 {
+            MM_BIT_H
+          } else {
+            MM_BIT_L
+          }, //F0
           speed_used,
           drive_mode_used,
         );
@@ -310,28 +302,30 @@ impl MMProtokoll {
         if speed_used > 28 {
           speed_used = 28;
         }
-        let speed_halfstep = (speed_used % 2) == 0;
+        let speed_halfstep = (speed_used % 2) != 0;
         //Nun Speed auf den Range 0..15 wie für V1,2 zurück skalieren
-        let speed = ((speed_used + 1) / 2) + 1;
+        //0 bleibt 0, 2..29 wird 2..15
+        let speed = (speed_used / 2) + if speed_used > 0 { 1 } else { 0 };
         //Fahren mit abs. Richtung
         self.add_mm2_fnkt_value(
           ddl_tel,
-          (funktionen & 0x01) != 0, //F0
+          //F0 mit Speed Halfstep
+          if (funktionen & 0x01) != 0 {
+            if speed_halfstep {
+              MM_BIT_O
+            } else {
+              MM_BIT_H
+            }
+          } else {
+            if speed_halfstep {
+              MM_BIT_U
+            } else {
+              MM_BIT_L
+            }
+          },
           speed,
           drive_mode_used,
         );
-        //2. Bit in F0 wird für zwischen Speedschritt verwendet
-        if speed_halfstep {
-          let f0_bitfolge = if (funktionen & 0x01) != 0 {
-            MM_BIT_O
-          } else {
-            MM_BIT_U
-          };
-          let faktor_baudrate = MM_BIT_0.len();
-          for i in 0..f0_bitfolge.len() {
-            ddl_tel.daten.last_mut().unwrap()[faktor_baudrate * 8 + i] = f0_bitfolge[i];
-          }
-        }
       }
     }
     self.old_drive_mode[adr] = drive_mode_used;
