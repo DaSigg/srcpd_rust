@@ -167,7 +167,7 @@ impl DdlGA<'_> {
       .borrow_mut()
       .get_ga_tel(adr, port, value, &mut ddl_tel);
     //Es ist nur ein Telegramm, keine Behandlung verzögertes senden notwendig
-    self.send(self.spidev, &mut ddl_tel);
+    <DdlGA<'_> as SRCPDeviceDDL>::send(self.spidev, &mut ddl_tel);
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr, port, value);
   }

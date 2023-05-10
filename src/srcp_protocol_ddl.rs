@@ -1,4 +1,9 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
+use std::{
+  cell::RefCell,
+  collections::HashMap,
+  rc::Rc,
+  time::{Duration, Instant},
+};
 
 /// Telegramm zum senden über SPI
 #[derive(Debug, Clone)]
@@ -14,6 +19,9 @@ pub struct DdlTel {
   pub pause_ende: Duration,
   /// Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm.
   pub delay: Duration,
+  /// Ab wann darf das nächste Telegramm gesendet werden:
+  /// Zeitpunkt Ende Versenden letztes + delay
+  pub instant_next: Option<Instant>,
   /// Die Bytes die gesendet werden müssen
   /// Es können hier mehrere Unabhöngige Telegramme zurückgegeben werden wenn diese nicht
   /// unmittelbar nacheinander gesendet werden dürfen. z.B. verlangt DCC 5ms zwischen 2 Telegrammen
@@ -40,6 +48,7 @@ impl DdlTel {
       pause_start,
       pause_ende,
       delay,
+      instant_next: None,
       daten: vec![Vec::with_capacity(capacity)],
     }
   }

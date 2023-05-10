@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::mpsc::Sender, thread};
+use std::{collections::HashMap, sync::mpsc::Sender, thread, time::Instant};
 
 use spidev::Spidev;
 
@@ -69,7 +69,7 @@ pub struct DdlGL<'a> {
   ///Alle noch nicht durch GL verwendeten aber vorhandenen Protokolle für Idle Telegramme
   all_idle_protokolle: Vec<DdlProtokolle>,
   ///Buffer für verzögertes senden
-  tel_buffer: Option<DdlTel>,
+  tel_buffer: Vec<DdlTel>,
 }
 
 impl DdlGL<'_> {
@@ -96,7 +96,7 @@ impl DdlGL<'_> {
       all_gl: HashMap::new(),
       adr_refresh: 0,
       all_idle_protokolle,
-      tel_buffer: None,
+      tel_buffer: Vec::new(),
     }
   }
 
@@ -230,7 +230,7 @@ impl DdlGL<'_> {
   /// * ddl_tel - Das Telegramm, das gesendet werden soll.
   fn send_tel(&mut self, ddl_tel: &mut DdlTel) {
     while ddl_tel.daten.len() > 0 {
-      self.send(self.spidev, ddl_tel);
+      <DdlGL<'_> as SRCPDeviceDDL>::send(self.spidev, ddl_tel);
 
       //Direktes weitersenden wenn nicht genügend GL's vorhanden sind oder wenn kein Delay verlangt wird.
       if (ddl_tel.daten.len() > 0)
@@ -244,40 +244,38 @@ impl DdlGL<'_> {
         break;
       }
     }
+    //Wenn noch Telegramme zum verzögert senden vorhanden sind -> in Buffer
+    if ddl_tel.daten.len() > 0 {
+      self.tel_buffer.push(ddl_tel.clone());
+    }
     //Immer aufrufen, auch wenn dieses Telegramm vollständig gesendet wurde um senden eines eventuell
     //noch im Buffer befindlichen Telegrammes zu ermöglichen.
-    self.send_buffer(ddl_tel);
+    self.send_buffer();
   }
 
-  /// Verwaltung von Telegrammen die nicht unmittelbar aufeinander folgend gesendet werden dürfen.
-  /// z.B. ist 5ms Pause zwischen zwei DCC Telegrammen an die selbe Adresse notwendig.
-  /// Um nicht einfach inneffizent 5ms zu warten werden solche Telegramme zurückgehalten und nach
-  /// einem anderen Telegramm gesendet.
-  /// Folgendes Verhalten:
-  /// - Wenn ein Telegramme mit noch nicht gesendetem Inhalt übergeben wurde -> Buffer.
-  /// - Wenn bereits eine DDLTel. auf verzögertes Senden wartete, dann wird dieses gesendet.
-  /// Damit ergibt sich eine Rekursion wenn 2 verzögerte Telegramme vorhanden sind, diese werden
-  /// abwechselnd abgearbeitet bis nur noch eines (oder keines) mehr vorhanden ist.
-  /// Es wird als Vereinfachung davon ausgegangen, dass die notwendige Verzögerung (z.B. 5 / 4 ms für DCC)
-  /// immer durch ein anderes Telegramm erreicht werden kann.
-  /// # Arguments
-  /// * ddl_tel - Das Telegramm, das verzögert gesendet werden soll.
-  fn send_buffer(&mut self, ddl_tel: &DdlTel) {
-    //Zuerst Telegramm aus Buffer holen
-    let mut tel_aus_buffer = self.tel_buffer.clone();
-    //Dann dieses Telegramm in Buffer wenn es noch ungesendete Teile hat.
-    if ddl_tel.daten.len() > 0 {
-      self.tel_buffer = Some(ddl_tel.clone());
-    } else {
-      self.tel_buffer = None;
-    }
-    //Wenn ein Telegramm im Buffer war, dann wird dieses jetzt gesendet
-    if tel_aus_buffer.is_some() {
-      self.send_tel(tel_aus_buffer.as_mut().unwrap());
+  /// Senden von Telegrammen die nicht unmittelbar aufeinander folgend gesendet werden dürfen.
+  /// z.B. ist 5ms Pause zwischen zwei DCC Telegrammen an die selbe Adresse notwendig,
+  /// 50ms bei MM5 zwischen den beiden Telegrammen für 28 v Stufen.
+  /// Es wird immer der ganze Buffer abgearbeitet und alles, was möglich ist, gesendet.
+  /// Abbruch erfolgt erst dann, wenn Buffer leer ist oder in einem Durchgang gar nichts gesendet werden konnte.
+  fn send_buffer(&mut self) {
+    let mut done = false;
+    while !done {
+      done = true;
+      for ddl_tel in self.tel_buffer.iter_mut() {
+        if ddl_tel.instant_next.unwrap() <= Instant::now() {
+          <DdlGL<'_> as SRCPDeviceDDL>::send(self.spidev, ddl_tel);
+          done = false;
+        }
+      }
+      if !done {
+        //Es wurde etwas gesendet, alle nun leeren Telegramme löschen
+        self.tel_buffer.retain(|ddl_tel| !ddl_tel.daten.is_empty());
+      }
     }
   }
 
-  /// Ermittlung, durch wievile GL's ein Protokoll verwendet wird
+  /// Ermittlung, durch wieviele GL's ein Protokoll verwendet wird
   /// # Arguments
   /// * protokoll - Das Protokoll, das gesucht werden soll.
   fn count_protokoll(&self, protokoll: DdlProtokolle) -> usize {

@@ -1,4 +1,7 @@
-use std::{thread, time::Duration};
+use std::{
+  thread,
+  time::{Duration, Instant},
+};
 
 use spidev::{Spidev, SpidevTransfer};
 
@@ -38,7 +41,10 @@ pub trait SRCPDeviceDDL {
   /// Das gesendete Teleramm wird aus "ddl_tel" gelöscht.
   /// * spidev - Geöffnetes SPI interface über das Telegramme zum Booster gesendet werden können
   /// * ddl_tel - Das zu sendende Telegramm. Es wird hier nur das erste Teleramm gesendet und dann gelöscht.
-  fn send(&self, spidev: &Option<Spidev>, ddl_tel: &mut DdlTel) {
+  fn send(spidev: &Option<Spidev>, ddl_tel: &mut DdlTel)
+  where
+    Self: Sized,
+  {
     assert!(
       ddl_tel.daten.len() > 0,
       "Aufruf SRCPDeviceDDL::send mit leerem ddl_tel"
@@ -63,6 +69,8 @@ pub trait SRCPDeviceDDL {
       .expect("DDL SPI write fail");
     //Und jetzt löschen was gesendet wurde
     ddl_tel.daten.remove(0);
+    //Wann darf das nächste Telegramm (wenn vorhanden) gesendet werden
+    ddl_tel.instant_next = Some(Instant::now() + ddl_tel.delay);
     unsafe {
       //Zugriff erfolgt nur aus einem Thread, also OK
       LETZTE_PAUSE = ddl_tel.pause_ende;
