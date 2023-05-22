@@ -99,7 +99,7 @@ impl CmdLineConfig {
 ///Main
 fn main() {
   env::set_var("RUST_LOG", "INFO");
-  env_logger::init();
+  env_logger::builder().format_timestamp_millis().init();
   if let Err(msg) = start(env::args()) {
     error!("Start Error: {}", msg);
   }

@@ -331,7 +331,7 @@ impl MMProtokoll {
         );
       }
       MmVersion::V5 => {
-        //28 Speeds mittels Senden 2 benachbarte Steps nacheinander, F0-4, abs. Richtung, analog V2, zusätzlicher Speed Schritt über 2. Bit F0
+        //28 Speeds mittels Senden 2 benachbarte Steps nacheinander, F0-4, abs. Richtung, analog V2
         //Max Speed Kontrolle
         if speed_used > 28 {
           speed_used = 28;
@@ -383,6 +383,8 @@ impl MMProtokoll {
         };
         //Fahren mit abs. Richtung
         if let Some(speed_half) = speed_half_step {
+          //Zwischen diesen Telegrammen muss eine 50ms Pause liegen
+          ddl_tel.delay = MM_PAUSE_MM5;
           self.add_mm2_fnkt_value(
             ddl_tel,
             if (funktionen & 0x01) != 0 {
@@ -393,7 +395,9 @@ impl MMProtokoll {
             speed_half,
             drive_mode_used,
           );
+          //2. Telegramm vorbereiten
           ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
+          self.add_mm_adr(ddl_tel, adr, false);
         }
         self.add_mm2_fnkt_value(
           ddl_tel,
@@ -471,7 +475,7 @@ impl DdlProtokoll for MMProtokoll {
       SPI_BAUDRATE_MAERKLIN_LOCO_2,
       MM_PAUSE_GL,
       MM_PAUSE_GL,
-      MM_PAUSE_MM5,
+      Duration::ZERO,
       MM_LEN,
     )
   }

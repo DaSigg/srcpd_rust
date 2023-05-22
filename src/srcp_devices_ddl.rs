@@ -3,6 +3,7 @@ use std::{
   time::{Duration, Instant},
 };
 
+use log::info;
 use spidev::{Spidev, SpidevTransfer};
 
 use crate::{srcp_protocol_ddl::DdlTel, srcp_server_types::SRCPMessage};
@@ -59,6 +60,9 @@ pub trait SRCPDeviceDDL {
     }
     if !pause.is_zero() {
       thread::sleep(pause);
+    }
+    if ddl_tel.adr == 40 {
+      info!("Send DDL Adr={}", ddl_tel.adr);
     }
     let mut transfer = SpidevTransfer::write(ddl_tel.daten[0].as_slice());
     transfer.speed_hz = ddl_tel.hz;

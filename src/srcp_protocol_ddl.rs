@@ -17,7 +17,7 @@ pub struct DdlTel {
   /// Notwendige Pause nach Paket. Ist in Daten enthalten, dient hier zur Information
   /// um eine allfällige folgende Startpause optimieren zu können
   pub pause_ende: Duration,
-  /// Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm.
+  /// Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm wenn mehrere Telegramme in einem DdlTel sind.
   pub delay: Duration,
   /// Ab wann darf das nächste Telegramm gesendet werden:
   /// Zeitpunkt Ende Versenden letztes + delay

@@ -236,7 +236,7 @@ impl DdlGL<'_> {
       if (ddl_tel.daten.len() > 0)
         && ((self.all_gl.len() < MIN_ANZ_GL_NO_DELAY) || ddl_tel.delay.is_zero())
       {
-        if !ddl_tel.delay.is_zero() {
+        if (!ddl_tel.delay.is_zero()) && (ddl_tel.daten.len() > 0) {
           thread::sleep(ddl_tel.delay);
         }
       } else {
