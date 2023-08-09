@@ -70,20 +70,20 @@ pub struct MMProtokoll {
   /// Erkennung Funktionswechsel bei M2 & 3
   old_funktionen: [u64; MAX_MM_ADRESSE + 1],
   /// Speicherung Speed um F1-F4 Pakete für MM2 & 3, die auch den Speed enthalten, korrekt erzeugen zu können
-  old_speed: [usize; MAX_MM_ADRESSE + 1],
+  old_speed_for_f1_f4: [usize; MAX_MM_ADRESSE + 1],
   /// Anzahl Initialisierte Funktionen
   funk_anz: [usize; MAX_MM_ADRESSE + 1],
 }
 impl MMProtokoll {
   /// Neue Instanz erstellen
   /// # Arguments
-  /// * version - V1 oder V2
+  /// * version - ZU verwendende MM Version
   pub fn from(version: MmVersion) -> MMProtokoll {
     MMProtokoll {
       version,
       old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MM_ADRESSE + 1],
       old_funktionen: [0; MAX_MM_ADRESSE + 1],
-      old_speed: [0; MAX_MM_ADRESSE + 1],
+      old_speed_for_f1_f4: [0; MAX_MM_ADRESSE + 1],
       funk_anz: [0; MAX_MM_ADRESSE + 1],
     }
   }
@@ -298,6 +298,12 @@ impl MMProtokoll {
           speed_used,
           drive_mode_used,
         );
+        //Für die Pakete F1-F4 muss Speed wiederholt werden.
+        self.old_speed_for_f1_f4[adr] = if speed_used == 0 {
+          0
+        } else {
+          speed_used - 1 //Wir brauchen hier wieder 0, 1, 2, ... und nicht 0, 2, 3, ...
+        };
       }
       MmVersion::V3 => {
         //28 Speeds, Halbschritt über 2. Bit F0, F0-4, abs. Richtung, analog V2, zusätzlicher Speed Schritt über 2. Bit F0
@@ -329,6 +335,12 @@ impl MMProtokoll {
           speed,
           drive_mode_used,
         );
+        //Für die Pakete F1-F4 muss Speed wiederholt werden.
+        self.old_speed_for_f1_f4[adr] = if speed == 0 {
+          0
+        } else {
+          speed - 1 //Wir brauchen hier wieder 0, 1, 2, ... und nicht 0, 2, 3, ...
+        };
       }
       MmVersion::V5 => {
         //28 Speeds mittels Senden 2 benachbarte Steps nacheinander, F0-4, abs. Richtung, analog V2
@@ -409,28 +421,35 @@ impl MMProtokoll {
           speed_full_step,
           drive_mode_used,
         );
+        //Für die Pakete F1-F4 wird Basis mit Speed immer nach MM2 erzeugt.
+        //Es muss dazu der Speed "sFS2"/speed_full_step wiederholt werden.
+        self.old_speed_for_f1_f4[adr] = if speed_full_step == 0 {
+          0
+        } else {
+          speed_full_step - 1 //Wir brauchen hier wieder 0, 1, 2, ... und nicht 0, 2, 3, ...
+        };
       }
     }
     self.old_drive_mode[adr] = drive_mode_used;
-    self.old_speed[adr] = speed_used;
     //und noch F0 übernehmen
     self.old_funktionen[adr] &= !1; //F0 löschen
     self.old_funktionen[adr] |= funktionen & 1; //und neu übernehmen löschen
   }
 
-  /// MM Paket vervollständigen (für alle telegramme, falls mehrere vorhanden sind):
+  /// MM Paket vervollständigen (für alle Telegramme, falls mehrere vorhanden sind):
   /// - Pause zwischen den beiden Paketen
   /// - Paketwiederholung
   /// - Pause am Schluss
   fn complete_mm_paket(&self, ddl_tel: &mut DdlTel) {
-    let ddl_daten = ddl_tel.daten.last_mut().unwrap();
-    //Pause zwischen den beiden Paketen ergänzen
-    ddl_daten.resize(ddl_daten.len() + MM_LEN_PAUSE_BETWEEN, 0);
-    //Wiederholung
-    let tel: Vec<u8> = ddl_daten[0..MM_LEN_PAKET].to_vec();
-    ddl_daten.extend(&tel);
-    //Pause am Schluss
-    ddl_daten.resize(ddl_daten.len() + MM_LEN_PAUSE_END, 0);
+    for ddl_daten in ddl_tel.daten.iter_mut() {
+      //Pause zwischen den beiden Paketen ergänzen
+      ddl_daten.resize(ddl_daten.len() + MM_LEN_PAUSE_BETWEEN, 0);
+      //Wiederholung
+      let tel: Vec<u8> = ddl_daten[0..MM_LEN_PAKET].to_vec();
+      ddl_daten.extend(&tel);
+      //Pause am Schluss
+      ddl_daten.resize(ddl_daten.len() + MM_LEN_PAUSE_END, 0);
+    }
   }
 }
 impl DdlProtokoll for MMProtokoll {
@@ -528,10 +547,10 @@ impl DdlProtokoll for MMProtokoll {
         self.get_gl_basis_tel_raw(
           adr,
           self.old_drive_mode[adr],
-          self.old_speed[adr],
+          self.old_speed_for_f1_f4[adr],
           funktionen,
           ddl_tel,
-          MmVersion::V2, //Hier immer V2, keine 1/2 Speed Steps
+          MmVersion::V2, //Hier immer V2, keine 1/2 Speed Steps für V3, für V5 ergibt dies das 2. Telegramm
         );
         let mut fx_bits = MM_F1_4[i - 1];
         //Zustand der Funktion ergänzen
@@ -551,9 +570,9 @@ impl DdlProtokoll for MMProtokoll {
           }
           fx_bits >>= 1;
         }
-        self.complete_mm_paket(ddl_tel);
       }
     }
+    self.complete_mm_paket(ddl_tel);
     self.old_funktionen[adr] = funktionen;
   }
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
