@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use log::warn;
+
 use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
 
 /// SPI Baudrate für Märklin / Motorola Protokoll.
@@ -607,6 +609,10 @@ impl DdlProtokoll for MMProtokoll {
       true,
     );
     self.complete_mm_paket(ddl_tel);
+    // !!!! Debug
+    if adr == 298 {
+      ddl_tel.trigger = true;
+    }
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles

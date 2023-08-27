@@ -10,6 +10,8 @@ use std::{
 pub struct DdlTel {
   /// Nur zu Debugzwecken: Adresse (GL oder GA)
   pub adr: usize,
+  /// Und auch zum debuggen: Triggerimpuls für Oszi bei senden dieses Telegrammes ausgeben
+  pub trigger: bool,
   /// Die Baudrate mit der gesendet werden muss
   pub hz: u32,
   /// Notwendige Pause vor Paket. MUSS zusätzlich gemacht werden
@@ -44,6 +46,7 @@ impl DdlTel {
   ) -> DdlTel {
     DdlTel {
       adr,
+      trigger: false,
       hz,
       pause_start,
       pause_ende,

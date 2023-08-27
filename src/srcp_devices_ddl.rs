@@ -3,6 +3,7 @@ use std::{
   time::{Duration, Instant},
 };
 
+use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
 use spidev::{Spidev, SpidevTransfer};
 
 use crate::{srcp_protocol_ddl::DdlTel, srcp_server_types::SRCPMessage};
@@ -60,6 +61,20 @@ pub trait SRCPDeviceDDL {
     if !pause.is_zero() {
       thread::sleep(pause);
     }
+    // Debug Oszi Trigger
+    let mut gpio_trigger_out: Option<SysFsGpioOutput> = None;
+    if ddl_tel.trigger {
+      //GPIO12, Pin32 für Trigger
+      gpio_trigger_out = Some(
+        gpio::sysfs::SysFsGpioOutput::open(12)
+          .expect(format!("GPIO für Oszi Trigger konnte nicht geöffnet werden").as_str()),
+      );
+      gpio_trigger_out
+        .as_mut()
+        .unwrap()
+        .set_value(GpioValue::High)
+        .unwrap();
+    }
     let mut transfer = SpidevTransfer::write(ddl_tel.daten[0].as_slice());
     transfer.speed_hz = ddl_tel.hz;
     spidev
@@ -67,6 +82,10 @@ pub trait SRCPDeviceDDL {
       .unwrap()
       .transfer(&mut transfer)
       .expect("DDL SPI write fail");
+    //Oszi Trigger zurücknehmen wenn ausgegeben
+    if gpio_trigger_out.is_some() {
+      gpio_trigger_out.unwrap().set_value(GpioValue::Low).unwrap();
+    }
     //Und jetzt löschen was gesendet wurde
     ddl_tel.daten.remove(0);
     //Wann darf das nächste Telegramm (wenn vorhanden) gesendet werden
