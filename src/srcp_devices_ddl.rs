@@ -1,15 +1,9 @@
-use std::{
-  thread,
-  time::{Duration, Instant},
-};
+use std::time::Instant;
 
 use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
 use spidev::{Spidev, SpidevTransfer};
 
 use crate::{srcp_protocol_ddl::DdlTel, srcp_server_types::SRCPMessage};
-
-/// Letzte Pause nach einem Telegramme. Gilt für alle Instanzen "SRCPDeviceDDL".
-static mut LETZTE_PAUSE: Duration = Duration::ZERO;
 
 /// Schnittstelle für alle Devices die in einem SRCP DDL Server bearbeitet werden
 pub trait SRCPDeviceDDL {
@@ -50,17 +44,6 @@ pub trait SRCPDeviceDDL {
       ddl_tel.daten.len() > 0,
       "Aufruf SRCPDeviceDDL::send mit leerem ddl_tel"
     );
-    let mut pause = Duration::ZERO;
-    unsafe {
-      //Zugriff erfolgt nur aus einem Thread, also OK
-      if LETZTE_PAUSE < ddl_tel.pause_start {
-        //Es ist noch eine Pause zum Start notwendig
-        pause = ddl_tel.pause_start - LETZTE_PAUSE;
-      }
-    }
-    if !pause.is_zero() {
-      thread::sleep(pause);
-    }
     // Debug Oszi Trigger
     let mut gpio_trigger_out: Option<SysFsGpioOutput> = None;
     if ddl_tel.trigger {
@@ -77,11 +60,13 @@ pub trait SRCPDeviceDDL {
     }
     let mut transfer = SpidevTransfer::write(ddl_tel.daten[0].as_slice());
     transfer.speed_hz = ddl_tel.hz;
-    spidev
-      .as_ref()
-      .unwrap()
-      .transfer(&mut transfer)
-      .expect("DDL SPI write fail");
+    for _ in 0..ddl_tel.tel_wiederholungen {
+      spidev
+        .as_ref()
+        .unwrap()
+        .transfer(&mut transfer)
+        .expect("DDL SPI write fail");
+    }
     //Oszi Trigger zurücknehmen wenn ausgegeben
     if gpio_trigger_out.is_some() {
       gpio_trigger_out.unwrap().set_value(GpioValue::Low).unwrap();
@@ -90,9 +75,5 @@ pub trait SRCPDeviceDDL {
     ddl_tel.daten.remove(0);
     //Wann darf das nächste Telegramm (wenn vorhanden) gesendet werden
     ddl_tel.instant_next = Some(Instant::now() + ddl_tel.delay);
-    unsafe {
-      //Zugriff erfolgt nur aus einem Thread, also OK
-      LETZTE_PAUSE = ddl_tel.pause_ende;
-    }
   }
 }

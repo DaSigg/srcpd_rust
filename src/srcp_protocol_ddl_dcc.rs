@@ -285,14 +285,15 @@ impl DdlProtokoll for DccProtokoll {
   /// Als Initiale Kapazitäte wird von einem 4 Byte (lange Adresse plus 2 Nutzbytes) DCC Telegramm ausgegangen.
   /// # Arguments
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
-  fn get_gl_new_tel(&self, adr: usize) -> DdlTel {
+  /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
+  ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
+  fn get_gl_new_tel(&self, adr: usize, refresh: bool) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_NMRA_2,
-      Duration::ZERO,
-      Duration::ZERO,
       DCC_DELAY_GLEICHE_ADR,
       DCC_MAX_LEN_BASIS + 4 * DCC_MAX_LEN_PRO_BYTE,
+      if refresh { 1 } else { 2 }, //Neue Lokkommandos werden immer 2-fach gesendet
     )
   }
 
@@ -542,10 +543,9 @@ impl DdlProtokoll for DccProtokoll {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_NMRA_2,
-      Duration::ZERO,
-      Duration::ZERO,
       DCC_DELAY_GLEICHE_ADR,
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
+      2, //GA wird immer nur bei Bedarf gesendet, kein Refresh. Deshalb immer 2-fach senden
     )
   }
   /// Erzeugt ein GA Telegramm
@@ -596,10 +596,9 @@ impl DdlProtokoll for DccProtokoll {
     let mut ddl_idle_tel = DdlTel::new(
       0,
       SPI_BAUDRATE_NMRA_2,
-      Duration::ZERO,
-      Duration::ZERO,
       Duration::ZERO, //Nicht notwendig für Idle Tel.
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
+      1,
     );
     self.add_sync(&mut ddl_idle_tel);
     let mut xor: u8 = 0;

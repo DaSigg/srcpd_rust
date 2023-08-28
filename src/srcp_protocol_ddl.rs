@@ -12,44 +12,39 @@ pub struct DdlTel {
   pub adr: usize,
   /// Und auch zum debuggen: Triggerimpuls für Oszi bei senden dieses Telegrammes ausgeben
   pub trigger: bool,
+  /// Wieviel mal wird ein Telegramm direkt hintereinander versendet.
+  /// Bei neuen Kommandos >1 (typisch 2), bei Refresh Cycle einmal.
+  pub tel_wiederholungen: usize,
   /// Die Baudrate mit der gesendet werden muss
   pub hz: u32,
-  /// Notwendige Pause vor Paket. MUSS zusätzlich gemacht werden
-  pub pause_start: Duration,
-  /// Notwendige Pause nach Paket. Ist in Daten enthalten, dient hier zur Information
-  /// um eine allfällige folgende Startpause optimieren zu können
-  pub pause_ende: Duration,
   /// Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm wenn mehrere Telegramme in einem DdlTel sind.
   pub delay: Duration,
   /// Ab wann darf das nächste Telegramm gesendet werden:
   /// Zeitpunkt Ende Versenden letztes + delay
   pub instant_next: Option<Instant>,
   /// Die Bytes die gesendet werden müssen
-  /// Es können hier mehrere Unabhöngige Telegramme zurückgegeben werden wenn diese nicht
+  /// Es können hier mehrere unabhängige Telegramme zurückgegeben werden. Wenn diese nicht
   /// unmittelbar nacheinander gesendet werden dürfen. z.B. verlangt DCC 5ms zwischen 2 Telegrammen
   /// an die selbe Adresse, was für Fahren und F0-F5 immer der Fall ist.
   /// Wenn mehr als ein Telegramm zurückgegeben wird, dann erfolgt die Ausgabe immer abwechlungsweise
-  /// mit einem Telegramm zu einer anderen Adresse (was auch ein anderes Protokoll sein kein).
+  /// mit einem Telegramm zu einer anderen Adresse (was auch ein anderes Protokoll sein kann).
   pub daten: Vec<Vec<u8>>,
 }
 impl DdlTel {
   /// Neue Instanz Erstellen
   /// # Arguments
   /// * hz - Zur Ausgane über SPI notwendige Baurate
-  /// * pause_start - Notwendige Pause vor Paket.
-  /// * pause_ende - Information Pause nach Paket die bereits in "daten" enthalten ist.
   /// * delay - Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm wenn in "daten" mehr als ein Telegramm vorhanden ist.
   /// * capacity - Initiale reservierte Grösse für Nutzdaten im ersten erstellten Telegramm
+  /// * telWiederholungen - Anzahl Wiederholungen beim Senden des Telegrammes
   pub fn new(
-    adr: usize, hz: u32, pause_start: Duration, pause_ende: Duration, delay: Duration,
-    capacity: usize,
+    adr: usize, hz: u32, delay: Duration, capacity: usize, tel_wiederholungen: usize,
   ) -> DdlTel {
     DdlTel {
       adr,
       trigger: false,
+      tel_wiederholungen,
       hz,
-      pause_start,
-      pause_ende,
       delay,
       instant_next: None,
       daten: vec![Vec::with_capacity(capacity)],
@@ -145,7 +140,9 @@ pub trait DdlProtokoll {
   /// Liefert ein leeres GL Telegramm zur Verwendung in "get_gl_basis_tel" und / oder "get_gl_zusatz_tel".
   /// # Arguments
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
-  fn get_gl_new_tel(&self, adr: usize) -> DdlTel;
+  /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
+  ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
+  fn get_gl_new_tel(&self, adr: usize, refresh: bool) -> DdlTel;
   /// Erzeugt das Basis Telegramm für GL.
   /// - Fahren
   /// - Basisfunktionen F0 bis "get_Anz_F_Basis". Es wedren hier nur diese Funktionen übernommen!

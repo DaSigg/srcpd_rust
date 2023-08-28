@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use log::warn;
-
 use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
 
 /// SPI Baudrate für Märklin / Motorola Protokoll.
@@ -16,6 +14,8 @@ const SPI_BAUDRATE_MAERKLIN_LOCO: u32 = 38461;
 /// - Pause am Anfang und vor Wiederholung mit 0 Bytes gefüllt.
 pub const SPI_BAUDRATE_MAERKLIN_LOCO_2: u32 = 2 * SPI_BAUDRATE_MAERKLIN_LOCO;
 const SPI_BAUDRATE_MAERKLIN_FUNC_2: u32 = 2 * SPI_BAUDRATE_MAERKLIN_LOCO_2;
+/// - 0 Bytes für Pause vor Paket: 4.2ms (Lok), resp. 2.1ms (Schaltdekoder) -> wegen bei doppleter Baudrate 1 Byte 104us (Lok). 62us (Schalt) = 42 Bytes
+const MM_LEN_PAUSE_START: usize = 42;
 /// Für Märklin Motorola wird wie folgt kodiert (doppelte Baudrate):
 /// - Paket mit
 ///  - 0 -> 0xC0, 0x00, ich habe aber Schaltdekoder, die damit nicht funktionieren sondern einen ein wenig längeren Impuls wollen, also 0xE0, 0x00 ....
@@ -25,13 +25,8 @@ const MM_LEN_PAKET: usize = 18 * 2;
 /// - 0 Bytes für Pause zwischen Paketen: 3 * (t 2 Bit, 208us / 416us) -> wegen doppelter Baudrate also 2 * 3 * 2 = 12 Bytes 0x00
 const MM_LEN_PAUSE_BETWEEN: usize = 2 * 3 * 2;
 /// - Paket Wiederholung
-/// - 0 Bytes für Pause nach Paket: 4.2ms (Lok), resp. 2.1ms (Schaltdekoder) -> wegen bei doppleter Baudrate 1 Byte 104us (Lok). 62us (Schalt) = 42 Bytes
-const MM_LEN_PAUSE_END: usize = 42;
-/// Pause am Anfang/Ende (Anfang nur, falls vorher keine Pause war)
-const MM_PAUSE_GA: Duration = Duration::from_micros(2100);
-const MM_PAUSE_GL: Duration = Duration::from_micros(4200);
-/// Total also 36 + 12 + 36 + 42 = 126 Bytes -> DMA Mode!
-const MM_LEN: usize = MM_LEN_PAKET + MM_LEN_PAUSE_BETWEEN + MM_LEN_PAKET + MM_LEN_PAUSE_END;
+/// Total also 42 + 36 + 12 + 36 = 126 Bytes -> DMA Mode!
+const MM_LEN: usize = MM_LEN_PAUSE_START + MM_LEN_PAKET + MM_LEN_PAUSE_BETWEEN + MM_LEN_PAKET;
 /// Mit doppelter Baudrate je die beiden Bytes für 0 und 1 Übertragung
 const MM_BIT_0_0: u8 = 0xC0;
 const MM_BIT_0_0_GA: u8 = 0xE0; //Eigentlich wäre das obige 0xC0 korrekt, habe aber Schaltdekoder die damit nicht funktionieren....
@@ -43,9 +38,9 @@ static MM_BIT_1: &'static [u8] = &[MM_BIT_1_0, MM_BIT_1_1]; //1
 static MM_BIT_L: &'static [u8] = &[MM_BIT_0_0, MM_BIT_0_1, MM_BIT_0_0, MM_BIT_0_1]; //00
 static MM_BIT_H: &'static [u8] = &[MM_BIT_1_0, MM_BIT_1_1, MM_BIT_1_0, MM_BIT_1_1]; //11
 static MM_BIT_O: &'static [u8] = &[MM_BIT_1_0, MM_BIT_1_1, MM_BIT_0_0, MM_BIT_0_1]; //10
+static MM_BIT_U: &'static [u8] = &[MM_BIT_0_0, MM_BIT_0_1, MM_BIT_1_0, MM_BIT_1_1]; //01
 static MM_BIT_L_GA: &'static [u8] = &[MM_BIT_0_0_GA, MM_BIT_0_1, MM_BIT_0_0_GA, MM_BIT_0_1]; //00 für GA, siehe oben
 static MM_BIT_O_GA: &'static [u8] = &[MM_BIT_1_0, MM_BIT_1_1, MM_BIT_0_0_GA, MM_BIT_0_1]; //10 für GA, siehe oben
-static MM_BIT_U: &'static [u8] = &[MM_BIT_0_0, MM_BIT_0_1, MM_BIT_1_0, MM_BIT_1_1]; //01
 
 /// MM2 & 3 Bitmuster für F1-4, Bit 3 ist jeweils der Zustand der Funktion
 static MM_F1_4: &'static [u8] = &[0b0011, 0b0100, 0b0110, 0b0111];
@@ -89,14 +84,20 @@ impl MMProtokoll {
       funk_anz: [0; MAX_MM_ADRESSE + 1],
     }
   }
-  /// MM 4 Adressbits (trinär codiert)
+  /// Pause am MM Anfang und MM 4 Adressbits (trinär codiert)
   /// Adresse 80 wird als 0000 gesendet, die eigentliche Adresse 80 ist der Idlestate, Lok 0 gibt es nicht
   /// # Arguments
   /// * ddl_tel - Telegramm, zu dessen letztem Telegramm die Adressbits hinzugefügtw erden sollen
   /// * adr_dekoder - Adresse, die ergänzt werden soll, LSB wird zuerst gesendet, 0..80 erlaubt.
   /// * ga_timing - Impulsverbreituerung 0 für GA's, siehe Kommentar zu MM_BIT_0_0_GA
-  fn add_mm_adr(&self, ddl_tel: &mut DdlTel, mut adr_dekoder: usize, ga_timing: bool) {
+  fn add_mm_pause_adr(&self, ddl_tel: &mut DdlTel, mut adr_dekoder: usize, ga_timing: bool) {
     assert!(adr_dekoder < 81, "MM Max Lokadresse ist 80");
+    //Pause am Anfang
+    ddl_tel
+      .daten
+      .last_mut()
+      .unwrap()
+      .resize(MM_LEN_PAUSE_START, 0);
     if adr_dekoder == 80 {
       adr_dekoder = 0;
     }
@@ -240,7 +241,7 @@ impl MMProtokoll {
       abs_dir >>= 1;
     }
   }
-  /// Erzeugt das Basis Telegramm für GL ohne Wiederholung und Pausen.
+  /// Erzeugt das Basis Telegramm für GL ohne Wiederholung und Pausen vor Wiederholung aber mit Pause am Anfang.
   /// - Fahren
   /// - Funktionen F0
   /// # Arguments
@@ -264,7 +265,7 @@ impl MMProtokoll {
     if speed_used > 0 {
       speed_used += 1; //Speed 1 ist Richtungswechsel, mit Speed 1..14 sind wir damit bei 2..15, mit 1..28 bei 2..29
     }
-    self.add_mm_adr(ddl_tel, adr, false);
+    self.add_mm_pause_adr(ddl_tel, adr, false);
     match version {
       MmVersion::V1 => {
         //14 Speeds, F0, rel. Richtung
@@ -411,7 +412,7 @@ impl MMProtokoll {
           );
           //2. Telegramm vorbereiten
           ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
-          self.add_mm_adr(ddl_tel, adr, false);
+          self.add_mm_pause_adr(ddl_tel, adr, false);
         }
         self.add_mm2_fnkt_value(
           ddl_tel,
@@ -441,16 +442,13 @@ impl MMProtokoll {
   /// MM Paket vervollständigen (für alle Telegramme, falls mehrere vorhanden sind):
   /// - Pause zwischen den beiden Paketen
   /// - Paketwiederholung
-  /// - Pause am Schluss
   fn complete_mm_paket(&self, ddl_tel: &mut DdlTel) {
     for ddl_daten in ddl_tel.daten.iter_mut() {
       //Pause zwischen den beiden Paketen ergänzen
       ddl_daten.resize(ddl_daten.len() + MM_LEN_PAUSE_BETWEEN, 0);
       //Wiederholung
-      let tel: Vec<u8> = ddl_daten[0..MM_LEN_PAKET].to_vec();
+      let tel: Vec<u8> = ddl_daten[MM_LEN_PAUSE_START..MM_LEN_PAKET + MM_LEN_PAUSE_START].to_vec();
       ddl_daten.extend(&tel);
-      //Pause am Schluss
-      ddl_daten.resize(ddl_daten.len() + MM_LEN_PAUSE_END, 0);
     }
   }
 }
@@ -490,20 +488,21 @@ impl DdlProtokoll for MMProtokoll {
   /// Liefert ein leeres GL Telegramm zur Verwendung in "get_gl_basis_tel" und / oder "get_gl_zusatz_tel".
   /// # Arguments
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
-  fn get_gl_new_tel(&self, adr: usize) -> DdlTel {
+  /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
+  ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
+  fn get_gl_new_tel(&self, adr: usize, refresh: bool) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_MAERKLIN_LOCO_2,
-      MM_PAUSE_GL,
-      MM_PAUSE_GL,
       Duration::ZERO,
       MM_LEN,
+      if refresh { 2 } else { 1 }, //Neue Kommandos 2-fach senden
     )
   }
 
   /// Erzeugt das Basis Telegramm für GL.
   /// - Fahren
-  /// - Basisfunktionen F0 bis "get_Anz_F_Basis". Es wedren hier nur diese Funktionen übernommen!
+  /// - Basisfunktionen F0 bis "get_Anz_F_Basis". Es werden hier nur diese Funktionen übernommen!
   /// # Arguments
   /// * adr - Adresse der Lok
   /// * drive_mode - Fahrtrichtung / Nothalt
@@ -581,16 +580,10 @@ impl DdlProtokoll for MMProtokoll {
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
   fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
-    DdlTel::new(
-      adr,
-      SPI_BAUDRATE_MAERKLIN_FUNC_2,
-      MM_PAUSE_GA,
-      MM_PAUSE_GA,
-      Duration::ZERO,
-      MM_LEN,
-    )
+    //Neue neue Kommandos, kein Refresh -> 2-fach senden
+    DdlTel::new(adr, SPI_BAUDRATE_MAERKLIN_FUNC_2, Duration::ZERO, MM_LEN, 2)
   }
-  /// Erzeugt ein GA Telegramm
+  /// Erzeugt ein MM GA Telegramm mit Pause am Anfang aber ohne Pause vor Wiederholung und Widerholung.
   /// # Arguments
   /// * adr - Adresse des Schaltdekoders
   /// * port - Port auf dem Schaltdekoder
@@ -601,7 +594,7 @@ impl DdlProtokoll for MMProtokoll {
     let adr_dekoder = (adr - 1) >> 2;
     //Subadresse auf Dekoder ist welches der 4 Paare plus Port
     let sub_adr = (((adr - 1) & 3) << 1) + (port & 1);
-    self.add_mm_adr(ddl_tel, adr_dekoder, true);
+    self.add_mm_pause_adr(ddl_tel, adr_dekoder, true);
     self.add_mm1_fnkt_value(
       ddl_tel,
       false,
@@ -609,17 +602,19 @@ impl DdlProtokoll for MMProtokoll {
       true,
     );
     self.complete_mm_paket(ddl_tel);
-    // !!!! Debug
-    if adr == 298 {
-      ddl_tel.trigger = true;
-    }
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
   fn get_idle_tel(&mut self) -> Option<DdlTel> {
     //Idle Telegramm MM ist Telegramm an nie verwendete Lok Adresse 80 (GL Adresse 80 wird als eigentliche Adr 0 ausgegeben)
-    let mut ddl_idle_tel = self.get_gl_new_tel(80);
+    let mut ddl_idle_tel = self.get_gl_new_tel(80, false);
+    //Pause am Anfang
+    ddl_idle_tel
+      .daten
+      .last_mut()
+      .unwrap()
+      .resize(MM_LEN_PAUSE_START, 0);
     {
       let ddl_daten = ddl_idle_tel.daten.last_mut().unwrap();
       //Adr 80 ist 4 * "O" Trit

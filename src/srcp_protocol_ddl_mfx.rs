@@ -377,14 +377,15 @@ impl DdlProtokoll for MfxProtokoll {
   /// Liefert ein leeres GL Telegramm zur Verwendung in "get_gl_basis_tel" und / oder "get_gl_zusatz_tel".
   /// # Arguments
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
-  fn get_gl_new_tel(&self, adr: usize) -> DdlTel {
+  /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
+  ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
+  fn get_gl_new_tel(&self, adr: usize, refresh: bool) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_MFX_2,
       Duration::ZERO,
-      Duration::ZERO,
-      Duration::ZERO,
       MFX_MAX_LEN,
+      if refresh { 2 } else { 1 }, //Neue Telegramme 2-fach senden
     )
   }
 
@@ -543,14 +544,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
   fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
     assert!(false, "MFX unterstützt keine GA, Aufruf get_ga_new_tel");
-    DdlTel::new(
-      adr,
-      SPI_BAUDRATE_MFX_2,
-      Duration::ZERO,
-      Duration::ZERO,
-      Duration::ZERO,
-      0,
-    )
+    DdlTel::new(adr, SPI_BAUDRATE_MFX_2, Duration::ZERO, 0, 1)
   }
 
   /// Erzeugt ein GA Telegramm
@@ -570,7 +564,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// Sobald eine GL vorhanden ist, wird keine Idle mehr gesendet, UID Zentrale wird dann periodisch
   /// über get_protokoll_telegrammme im Intervall INTERVALL_UID gesendet
   fn get_idle_tel(&mut self) -> Option<DdlTel> {
-    let mut ddl_tel = self.get_gl_new_tel(0);
+    let mut ddl_tel = self.get_gl_new_tel(0, false);
     self.send_uid_regcounter(&mut ddl_tel);
     Some(ddl_tel)
   }

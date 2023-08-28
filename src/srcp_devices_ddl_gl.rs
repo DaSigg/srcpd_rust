@@ -208,7 +208,7 @@ impl DdlGL<'_> {
       .unwrap()
       .borrow_mut();
     //Basis GL Telegram erzeugen und zum Booster Versenden
-    let mut ddl_tel = protokoll.get_gl_new_tel(adr);
+    let mut ddl_tel = protokoll.get_gl_new_tel(adr, refresh);
     protokoll.get_gl_basis_tel(
       adr,
       gl.direction,
