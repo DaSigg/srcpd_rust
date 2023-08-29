@@ -19,6 +19,9 @@ pub struct DdlTel {
   pub hz: u32,
   /// Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm wenn mehrere Telegramme in einem DdlTel sind.
   pub delay: Duration,
+  /// Wenn delay gesetzt ist und mehr als 2 Telegramme vorhanden sind:
+  /// wenn true wirkt der delay nur für 2. Telegramm, für alle andern nicht mehr (MM5), wenn false bei allen (DCC).
+  pub delay_only2nd: bool,
   /// Ab wann darf das nächste Telegramm gesendet werden:
   /// Zeitpunkt Ende Versenden letztes + delay
   pub instant_next: Option<Instant>,
@@ -38,7 +41,8 @@ impl DdlTel {
   /// * capacity - Initiale reservierte Grösse für Nutzdaten im ersten erstellten Telegramm
   /// * telWiederholungen - Anzahl Wiederholungen beim Senden des Telegrammes
   pub fn new(
-    adr: usize, hz: u32, delay: Duration, capacity: usize, tel_wiederholungen: usize,
+    adr: usize, hz: u32, delay: Duration, delay_only2nd: bool, capacity: usize,
+    tel_wiederholungen: usize,
   ) -> DdlTel {
     DdlTel {
       adr,
@@ -46,6 +50,7 @@ impl DdlTel {
       tel_wiederholungen,
       hz,
       delay,
+      delay_only2nd,
       instant_next: None,
       daten: vec![Vec::with_capacity(capacity)],
     }

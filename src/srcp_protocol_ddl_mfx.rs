@@ -384,6 +384,7 @@ impl DdlProtokoll for MfxProtokoll {
       adr,
       SPI_BAUDRATE_MFX_2,
       Duration::ZERO,
+      false,
       MFX_MAX_LEN,
       if refresh { 2 } else { 1 }, //Neue Telegramme 2-fach senden
     )
@@ -544,7 +545,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
   fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
     assert!(false, "MFX unterstützt keine GA, Aufruf get_ga_new_tel");
-    DdlTel::new(adr, SPI_BAUDRATE_MFX_2, Duration::ZERO, 0, 1)
+    DdlTel::new(adr, SPI_BAUDRATE_MFX_2, Duration::ZERO, false, 0, 1)
   }
 
   /// Erzeugt ein GA Telegramm

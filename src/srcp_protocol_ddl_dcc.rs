@@ -292,6 +292,7 @@ impl DdlProtokoll for DccProtokoll {
       adr,
       SPI_BAUDRATE_NMRA_2,
       DCC_DELAY_GLEICHE_ADR,
+      false,
       DCC_MAX_LEN_BASIS + 4 * DCC_MAX_LEN_PRO_BYTE,
       if refresh { 1 } else { 2 }, //Neue Lokkommandos werden immer 2-fach gesendet
     )
@@ -544,6 +545,7 @@ impl DdlProtokoll for DccProtokoll {
       adr,
       SPI_BAUDRATE_NMRA_2,
       DCC_DELAY_GLEICHE_ADR,
+      false,
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
       2, //GA wird immer nur bei Bedarf gesendet, kein Refresh. Deshalb immer 2-fach senden
     )
@@ -597,6 +599,7 @@ impl DdlProtokoll for DccProtokoll {
       0,
       SPI_BAUDRATE_NMRA_2,
       Duration::ZERO, //Nicht notwendig für Idle Tel.
+      false,
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
       1,
     );

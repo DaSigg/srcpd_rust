@@ -495,14 +495,20 @@ impl DdlProtokoll for MMProtokoll {
       adr,
       SPI_BAUDRATE_MAERKLIN_LOCO_2,
       Duration::ZERO,
+      true,
       MM_LEN,
-      if refresh { 2 } else { 1 }, //Neue Kommandos 2-fach senden
+      if refresh { 1 } else { 2 }, //Neue Kommandos 2-fach senden
     )
   }
 
   /// Erzeugt das Basis Telegramm für GL.
   /// - Fahren
   /// - Basisfunktionen F0 bis "get_Anz_F_Basis". Es werden hier nur diese Funktionen übernommen!
+  ///
+  /// ACHTUNG: complete_mm_paket für Pause und Wiederholung wird hier noch nicht aufgerufen da
+  /// in srcp_devices_ddl_gl IMMER get_gl_basis_tel und anschliessend get_gl_zusatz_tel aufgeruden
+  /// wird in der das dan übernommen wird!
+  ///
   /// # Arguments
   /// * adr - Adresse der Lok
   /// * drive_mode - Fahrtrichtung / Nothalt
@@ -516,7 +522,6 @@ impl DdlProtokoll for MMProtokoll {
     funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
     self.get_gl_basis_tel_raw(adr, drive_mode, speed, funktionen, ddl_tel, self.version);
-    self.complete_mm_paket(ddl_tel);
   }
   /// Erzeugt das / die Fx Zusatztelegramm(e) für GL.
   /// - Funktionen nach "get_Anz_F_Basis"
@@ -530,6 +535,10 @@ impl DdlProtokoll for MMProtokoll {
   fn get_gl_zusatz_tel(
     &mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
+    //Debug!!!!
+    if adr == 40 {
+      ddl_tel.trigger = true;
+    }
     if self.version == MmVersion::V1 {
       return;
     }
@@ -562,7 +571,8 @@ impl DdlProtokoll for MMProtokoll {
           //Bit 11 13 15. Da wegen doppelter Baurate 2 Byte pro Bit nochmals * 2
           let faktor_baudrate = MM_BIT_0.len();
           for j in 0..faktor_baudrate {
-            ddl_tel.daten.last_mut().unwrap()[faktor_baudrate * (11 + bit * 2) + j] =
+            ddl_tel.daten.last_mut().unwrap()
+              [MM_LEN_PAUSE_START + faktor_baudrate * (11 + bit * 2) + j] =
               if (fx_bits & 0b0001) == 0 {
                 MM_BIT_0[j]
               } else {
@@ -581,7 +591,14 @@ impl DdlProtokoll for MMProtokoll {
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
   fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
     //Neue neue Kommandos, kein Refresh -> 2-fach senden
-    DdlTel::new(adr, SPI_BAUDRATE_MAERKLIN_FUNC_2, Duration::ZERO, MM_LEN, 2)
+    DdlTel::new(
+      adr,
+      SPI_BAUDRATE_MAERKLIN_FUNC_2,
+      Duration::ZERO,
+      false,
+      MM_LEN,
+      2,
+    )
   }
   /// Erzeugt ein MM GA Telegramm mit Pause am Anfang aber ohne Pause vor Wiederholung und Widerholung.
   /// # Arguments
