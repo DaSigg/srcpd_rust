@@ -1,4 +1,9 @@
-use std::{collections::HashMap, sync::mpsc::Sender, thread, time::Instant};
+use std::{
+  collections::HashMap,
+  sync::mpsc::Sender,
+  thread,
+  time::{Duration, Instant},
+};
 
 use spidev::Spidev;
 
@@ -240,6 +245,10 @@ impl DdlGL<'_> {
           thread::sleep(ddl_tel.delay);
         }
       } else {
+        //Wenn ein delay vorhanden ist und dieser nur auf das 2. Telegramm wirken soll, dann kann er jetzt sicher weg
+        if ddl_tel.delay_only2nd {
+          ddl_tel.delay = Duration::ZERO;
+        }
         //Optimiertes weitersenden über Buffer
         break;
       }

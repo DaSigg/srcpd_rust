@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
 use spidev::{Spidev, SpidevTransfer};
@@ -75,9 +75,5 @@ pub trait SRCPDeviceDDL {
     ddl_tel.daten.remove(0);
     //Wann darf das nächste Telegramm (wenn vorhanden) gesendet werden
     ddl_tel.instant_next = Some(Instant::now() + ddl_tel.delay);
-    //Wenn ein delay vorhanden ist und dieser nur auf das 2. Telegramm wirken soll, dann kann er jetzt sicher weg
-    if ddl_tel.delay_only2nd {
-      ddl_tel.delay = Duration::ZERO;
-    }
   }
 }

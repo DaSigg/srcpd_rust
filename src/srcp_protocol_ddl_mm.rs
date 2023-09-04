@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use log::info;
+
 use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
 
 /// SPI Baudrate für Märklin / Motorola Protokoll.
@@ -535,51 +537,47 @@ impl DdlProtokoll for MMProtokoll {
   fn get_gl_zusatz_tel(
     &mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
-    //Debug!!!!
-    if adr == 40 {
-      ddl_tel.trigger = true;
-    }
-    if self.version == MmVersion::V1 {
-      return;
-    }
-    let funk_anz = self.funk_anz[adr];
-    //Nun noch F1-4, jedoch nur bei Veränderung sofort senden
-    for i in 1..self.get_gl_anz_f() {
-      if i >= funk_anz {
-        break;
-      }
-      let mask: u64 = 1 << i;
-      if (((self.old_funktionen[adr] ^ funktionen) & mask) != 0) || refresh {
-        //Veränderung oder immer verlangt
-        //Neues Telegramm erzeugen
-        ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
-        //Als Basis Standard Fahren Telegramm verwenden und dieses dann auf F1-4 ändern
-        self.get_gl_basis_tel_raw(
-          adr,
-          self.old_drive_mode[adr],
-          self.old_speed_for_f1_f4[adr],
-          funktionen,
-          ddl_tel,
-          MmVersion::V2, //Hier immer V2, keine 1/2 Speed Steps für V3, für V5 ergibt dies das 2. Telegramm
-        );
-        let mut fx_bits = MM_F1_4[i - 1];
-        //Zustand der Funktion ergänzen
-        if (funktionen & mask) != 0 {
-          fx_bits |= 0b1000;
+    //Für MM1 gibt es hier nichts zu tun, nur F0 im Basistelegramm
+    if self.version != MmVersion::V1 {
+      let funk_anz = self.funk_anz[adr];
+      //Nun noch F1-4, jedoch nur bei Veränderung sofort senden
+      for i in 1..self.get_gl_anz_f() {
+        if i >= funk_anz {
+          break;
         }
-        for bit in 0..4 {
-          //Bit 11 13 15. Da wegen doppelter Baurate 2 Byte pro Bit nochmals * 2
-          let faktor_baudrate = MM_BIT_0.len();
-          for j in 0..faktor_baudrate {
-            ddl_tel.daten.last_mut().unwrap()
-              [MM_LEN_PAUSE_START + faktor_baudrate * (11 + bit * 2) + j] =
-              if (fx_bits & 0b0001) == 0 {
-                MM_BIT_0[j]
-              } else {
-                MM_BIT_1[j]
-              };
+        let mask: u64 = 1 << i;
+        if (((self.old_funktionen[adr] ^ funktionen) & mask) != 0) || refresh {
+          //Veränderung oder immer verlangt
+          //Neues Telegramm erzeugen
+          ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
+          //Als Basis Standard Fahren Telegramm verwenden und dieses dann auf F1-4 ändern
+          self.get_gl_basis_tel_raw(
+            adr,
+            self.old_drive_mode[adr],
+            self.old_speed_for_f1_f4[adr],
+            funktionen,
+            ddl_tel,
+            MmVersion::V2, //Hier immer V2, keine 1/2 Speed Steps für V3, für V5 ergibt dies das 2. Telegramm
+          );
+          let mut fx_bits = MM_F1_4[i - 1];
+          //Zustand der Funktion ergänzen
+          if (funktionen & mask) != 0 {
+            fx_bits |= 0b1000;
           }
-          fx_bits >>= 1;
+          for bit in 0..4 {
+            //Bit 11 13 15. Da wegen doppelter Baurate 2 Byte pro Bit nochmals * 2
+            let faktor_baudrate = MM_BIT_0.len();
+            for j in 0..faktor_baudrate {
+              ddl_tel.daten.last_mut().unwrap()
+                [MM_LEN_PAUSE_START + faktor_baudrate * (11 + bit * 2) + j] =
+                if (fx_bits & 0b0001) == 0 {
+                  MM_BIT_0[j]
+                } else {
+                  MM_BIT_1[j]
+                };
+            }
+            fx_bits >>= 1;
+          }
         }
       }
     }
