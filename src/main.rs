@@ -15,7 +15,7 @@ use srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessa
 use std::{
   cell::RefCell,
   collections::HashMap,
-  env, process,
+  env, fs, process,
   rc::Rc,
   sync::mpsc::{self, Sender},
   thread,
@@ -36,6 +36,9 @@ mod srcp_protocol_ddl_mm;
 mod srcp_server_ddl;
 mod srcp_server_s88;
 mod srcp_server_types;
+
+/// PID Filename
+const PID_FILE: &str = "/var/run/srcpd.pid";
 
 /// Liefert alle vorhandenen SRCP Servertypen zurück
 fn get_alle_srcp_server() -> Vec<Rc<RefCell<dyn srcp_server_types::SRCPServer>>> {
@@ -135,6 +138,20 @@ fn terminate_poweroff(all_cmd_tx: HashMap<usize, Sender<Message>>) {
   }
 }
 
+///PID File schreiben
+/// # Arguments
+/// * pid - Aktuelle, zu schreibende PID
+fn write_pidfile(pid: i32) {
+  if fs::write(&PID_FILE, pid.to_string()).is_err() {
+    warn!("PID konnte nicht gespeichert werden.");
+  }
+}
+
+///PID File löschen
+fn del_pidfile() {
+  fs::remove_file(PID_FILE).unwrap_or(());
+}
+
 ///Start srcpd_rust
 /// # Arguments
 /// * args - Kommandozeilenargumente
@@ -160,7 +177,9 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
     info!("fork()");
     let pid = unsafe { fork() };
     match pid.expect("Fork Failed: Unable to create child process!") {
-      Parent { child: _ } => {
+      Parent { child: child_pid } => {
+        //PID File schreiben
+        write_pidfile(child_pid.into());
         return Ok(());
       }
       _ => (),
@@ -238,12 +257,13 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
       }
     }
   }
-  //Sicherstellung Power Ausschalten wenn Programm terminiert wird
+  //Sicherstellung Power Ausschalten und PID File gelöscht wird wenn Programm terminiert wird
   let all_cmd_tx_copy = all_cmd_tx.clone();
   thread::Builder::new()
     .name("Cleanup".to_string())
     .spawn(move || {
       terminate_poweroff(all_cmd_tx_copy);
+      del_pidfile();
     })
     .unwrap();
 

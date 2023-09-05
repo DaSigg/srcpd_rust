@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use log::info;
-
 use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
 
 /// SPI Baudrate für Märklin / Motorola Protokoll.
