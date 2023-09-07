@@ -28,6 +28,8 @@ use crate::{srcp_devices_ddl_power::DdlPower, srcp_protocol_ddl::DdlProtokolle};
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
 /// Defaultpfad zum File für Speicherung Neuanmeldezähler
 const PATH_REG_COUNTER_FILE: &str = "/etc/srcpd.regcount";
+/// Thead Sleep wenn Power Off ist damit nicht 100% CPU Last vorhanden ist
+const POWER_OFF_CPU_PAUSE: Duration = Duration::from_millis(10);
 
 pub struct DDL {
   //Konfiguration
@@ -295,10 +297,10 @@ impl DDL {
       }
       //Wenn Power eingeschaltet ist, dann wird die Queue abgearbeitet
       //Power Device muss vorhanden sein, is_dev_spezifisch() liefert den Power Zustand
-      if all_devices[&SRCPMessageDevice::Power]
+      let power_on = all_devices[&SRCPMessageDevice::Power]
         .borrow()
-        .is_dev_spezifisch()
-      {
+        .is_dev_spezifisch();
+      if power_on {
         //Wenn Watchdog verlangt ist, dann machen wir hier noch dessen Kontrolle und Power off, wenn abgelaufen
         if self.watchdog && (Instant::now() > (instant_kommando + WATCHDOG_TIMEOUT)) {
           //Ausschaltkommando, Session ID 0 = srcp Server selbst
@@ -332,9 +334,15 @@ impl DDL {
           }
         }
       }
+      //Wenn Power On ist wird dauernd etwas gesendet. Die CPU "Pausen" kommen durch das SPI senden zu stande.
+      //Wenn Power Off ist, wird nichts gesendet. Damit machen wir in diesem Loop 100% CPU Last für nichts.
+      //Deshalb der CPU etwas Pausen gönnen
+      if !power_on {
+        thread::sleep(POWER_OFF_CPU_PAUSE);
+      }
       //Allen Devices die Möglichkeit geben Hintergrundaufgaben abzuarbeiten
       for (_, dev) in &all_devices {
-        dev.borrow_mut().execute();
+        dev.borrow_mut().execute(power_on);
       }
     }
   }

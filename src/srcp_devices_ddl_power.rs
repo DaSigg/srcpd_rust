@@ -25,6 +25,8 @@ const DSR: u16 = 2;
 /// Dauer Start- Stop Impuls siggmode
 const DAUER_STOP_IMPULS_SIGG_MODE: Duration = Duration::from_millis(500);
 const DAUER_START_IMPULS_SIGG_MODE: Duration = Duration::from_millis(750);
+/// Verzögerung Power On Meldung um Booster allen Dekoder Zeit zum starten zu geben
+const DELAY_POWER_ON_MELDUNG: Duration = Duration::from_millis(100);
 /// Leitungen zum Booster ON ist 0 wegen Invertierung durch RS232 Treiber 0V->12V / 3.3V->-12V
 const RS232_ON: GpioValue = GpioValue::Low;
 const RS232_OFF: GpioValue = GpioValue::High;
@@ -45,6 +47,8 @@ pub struct DdlPower {
   shortcut_delay: Duration,
   //Aktueller Power Zustand
   power_on: bool,
+  //Zeitpunkt Power On um On-Meldung verzögert zu liefern. Damit alle Dekoder Zeit haben zu starten.
+  power_on_zeitpunkt: Instant,
   //Zeitpunkt Start/Stopimpulse wieder ausschalten siggmode
   impuls_aus: Instant,
   //Letzter Zeitpunkt Booster OK (kein Kurzsschluss) bei nicht siggmode
@@ -76,6 +80,7 @@ impl DdlPower {
       dsr_invers: dsr_invers,
       shortcut_delay: Duration::from_millis(shortcut_delay),
       power_on: false,
+      power_on_zeitpunkt: Instant::now(),
       impuls_aus: Instant::now(),
       kein_shortcut: Instant::now(),
       gpio_cts_go_in: gpio::sysfs::SysFsGpioInput::open(CTS)
@@ -117,6 +122,12 @@ impl DdlPower {
           .gpio_rts_go_out
           .set_value(if power { RS232_ON } else { RS232_OFF })
           .unwrap();
+      }
+      if power {
+        //Soeben neu eingeschaltet.
+        //Damit der Booster etwas Zeit hat um einzuschalten und erste Kommandos erst dann ausgegeben werden,
+        //wenn sicher alle Dekoder gestartet haben -> Einschaltzeit merken. Power On wird erst mit Verzögerung gemeldet.
+        self.power_on_zeitpunkt = Instant::now();
       }
     }
   }
@@ -197,15 +208,20 @@ impl SRCPDeviceDDL for DdlPower {
       .unwrap();
   }
   /// Abfrage eines Device spezifischen Wertes / Zustandes
-  /// Liefert hier den Power Zustand
+  /// Liefert hier den Power Zustand.
+  /// Power On wird immer erst verzögert geliefert damit alle Dekoder aufstarten können, bevor erste Kommandoausgabe erfolgt.
   fn is_dev_spezifisch(&self) -> bool {
-    self.power_on
+    self.power_on && (self.power_on_zeitpunkt + DELAY_POWER_ON_MELDUNG <= Instant::now())
   }
 
   /// Hintergrundaktivität:
   /// - Ausschalten Start- Stopimpulse zu Booster wenn siggmode
   /// - Kontrolle Boosterrückmeldung On/Off (Shortcut)
-  fn execute(&mut self) {
+  /// # Arguments
+  /// * power - true: Power / Booster ist ein, Strom auf den Schienen
+  ///           false: Power / Booster ist aus
+  ///           -> wird hier nicht verwendet, wir sind ja im DDL Device "Power"
+  fn execute(&mut self, _power: bool) {
     if self.siggmode {
       //Start- Stop Impulse aus
       if Instant::now() > self.impuls_aus {

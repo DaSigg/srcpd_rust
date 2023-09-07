@@ -22,7 +22,10 @@ pub trait SRCPDeviceDDL {
   fn send_refresh(&mut self) {}
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
-  fn execute(&mut self) {}
+  /// # Arguments
+  /// * power - true: Power / Booster ist ein, Strom auf den Schienen
+  ///           false: Power / Booster ist aus
+  fn execute(&mut self, _power: bool) {}
   /// Alle internen zustände als Info Message versenden
   /// # Arguments
   /// * session_id - SRCOP Client Session ID an die die Zustände gesendet werden sollen.

@@ -9,11 +9,12 @@ license = "LGPL-3.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nix = "0.26.0"
+nix = "0.27.1"
 configparser = "3.0.0"
 log = "0.4.0"
 env_logger = "0.10.0"
-spidev = "0.5.1"
+spidev = "0.6.0"
 gpio = "0.4.1"
 signal-hook = "0.3.15"
 splitty = "1.0.1"
+fork = "0.1.22"

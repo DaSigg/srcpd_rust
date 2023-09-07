@@ -645,11 +645,17 @@ impl SRCPDeviceDDL for DdlGL<'_> {
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
   /// Wird hier verwendet um allen vorhandenen Protokollen die Möglichkeit zu geben
   /// ihr periodische Aufgaben / Telegramme auszuführen.
-  fn execute(&mut self) {
-    for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
-      for (_version, prot_impl) in prot_versionen {
-        if let Some(tel) = prot_impl.borrow_mut().get_protokoll_telegrammme().as_mut() {
-          self.send_tel(tel);
+  /// # Arguments
+  /// * power - true: Power / Booster ist ein, Strom auf den Schienen
+  ///           false: Power / Booster ist aus
+  fn execute(&mut self, power: bool) {
+    //Ohne Power macht es auch keinen Sinn Telegramme zu senden
+    if power {
+      for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
+        for (_version, prot_impl) in prot_versionen {
+          if let Some(tel) = prot_impl.borrow_mut().get_protokoll_telegrammme().as_mut() {
+            self.send_tel(tel);
+          }
         }
       }
     }

@@ -370,16 +370,22 @@ impl SRCPDeviceDDL for DdlGA<'_> {
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
   /// Hier wird das automatische Ausschalten von GA Outputs nach Delay Zeit ausgeführt
-  fn execute(&mut self) {
-    let mut i = 0;
-    while i < self.all_ga_auto_off.len() {
-      let ga_auto_off = &self.all_ga_auto_off[i];
-      if Instant::now() > ga_auto_off.off_zeit {
-        //Auto off
-        self.send_ga(ga_auto_off.adr, ga_auto_off.port, false);
-        self.all_ga_auto_off.remove(i);
-      } else {
-        i += 1;
+  /// # Arguments
+  /// * power - true: Power / Booster ist ein, Strom auf den Schienen
+  ///           false: Power / Booster ist aus
+  fn execute(&mut self, power: bool) {
+    //Ausschaltkommando senden macht nur Sinn, wenn Power vorhanden ist
+    if power {
+      let mut i = 0;
+      while i < self.all_ga_auto_off.len() {
+        let ga_auto_off = &self.all_ga_auto_off[i];
+        if Instant::now() > ga_auto_off.off_zeit {
+          //Auto off
+          self.send_ga(ga_auto_off.adr, ga_auto_off.port, false);
+          self.all_ga_auto_off.remove(i);
+        } else {
+          i += 1;
+        }
       }
     }
   }

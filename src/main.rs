@@ -8,8 +8,8 @@ use configparser::ini::Ini;
 use log::{error, info, warn};
 use nix::{
   libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM},
-  unistd::{fork, ForkResult::Parent},
 };
+use fork::{fork, Fork};
 use signal_hook::iterator::Signals;
 use srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType};
 use std::{
@@ -175,14 +175,14 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
   //fork() wenn notwendig
   if cmd_line_config.fork {
     info!("fork()");
-    let pid = unsafe { fork() };
-    match pid.expect("Fork Failed: Unable to create child process!") {
-      Parent { child: child_pid } => {
+    match fork() {
+     Ok(Fork::Parent(child)) => {
         //PID File schreiben
-        write_pidfile(child_pid.into());
+        write_pidfile(child);
         return Ok(());
-      }
-      _ => (),
+     }
+     Ok(Fork::Child) => (),
+     Err(_) => error!("Fork failed"),
     }
   }
   //Configfile lesen
