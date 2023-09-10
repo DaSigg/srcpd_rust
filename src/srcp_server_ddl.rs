@@ -28,7 +28,7 @@ use crate::{srcp_devices_ddl_power::DdlPower, srcp_protocol_ddl::DdlProtokolle};
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
 /// Defaultpfad zum File für Speicherung Neuanmeldezähler
 const PATH_REG_COUNTER_FILE: &str = "/etc/srcpd.regcount";
-/// Thead Sleep wenn Power Off ist damit nicht 100% CPU Last vorhanden ist
+/// Thread Sleep wenn Power Off ist damit nicht 100% CPU Last vorhanden ist
 const POWER_OFF_CPU_PAUSE: Duration = Duration::from_millis(10);
 
 pub struct DDL {
@@ -51,6 +51,9 @@ pub struct DDL {
   dsr_invers: bool,
   //Verzögerung bis Abschaltung wegen Kurzschluss
   shortcut_delay: u64,
+  //Wenn Siggmode: minimale Power On Zeit damit einmalig bei Ausschaltung
+  //(wegen Kurzschluss) wieder versucht wird einzuschalten.
+  timeout_shortcut_power_off: u64,
   //Watchdog aktiviert, automatische Power Ausschaltung wenn 2s lang keine Kommando empfangen wurde
   watchdog: bool,
 
@@ -70,6 +73,7 @@ impl Clone for DDL {
       siggmode: self.siggmode,
       dsr_invers: self.dsr_invers,
       shortcut_delay: self.shortcut_delay,
+      timeout_shortcut_power_off: self.timeout_shortcut_power_off,
       watchdog: self.watchdog,
       spidev: None, //Wird nie geklont
     }
@@ -89,6 +93,7 @@ impl DDL {
       siggmode: false,
       dsr_invers: false,
       shortcut_delay: 0,
+      timeout_shortcut_power_off: 0,
       watchdog: false,
       spidev: None,
     }
@@ -168,6 +173,7 @@ impl DDL {
         self.siggmode,
         self.dsr_invers,
         self.shortcut_delay,
+        self.timeout_shortcut_power_off,
       ))),
     );
     //GA Device
@@ -402,6 +408,14 @@ impl SRCPServer for DDL {
       .parse::<u64>()
       .ok()
       .ok_or("DDL: shortcut_delay Parameter muss eine Zahl >= 0 sein")?;
+    if let Some(timeout_shortcut_power_off) = config_file_bus.get("timeout_shortcut_power_off") {
+      self.timeout_shortcut_power_off = timeout_shortcut_power_off
+        .as_ref()
+        .ok_or("DDL: timeout_shortcut_power_off ohne Wert")?
+        .parse::<u64>()
+        .ok()
+        .ok_or("DDL: timeout_shortcut_power_off muss eine Zahl >= 0 sein")?;
+    }
     self.watchdog = config_file_bus.get("watchdog").is_some();
     Ok(())
   }

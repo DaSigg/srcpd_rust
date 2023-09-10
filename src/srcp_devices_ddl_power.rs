@@ -45,6 +45,9 @@ pub struct DdlPower {
   dsr_invers: bool,
   //Verzögerungszeit in ms bis Ausschaltung bei Überlast wenn NICHT siggmode
   shortcut_delay: Duration,
+  //Zeit, die Booster On sein muss in uSekunden, damit bei Off (wegen Schluss) automatisch wieder eingeschaltet wird wenn Siggmode
+  //0 = Ausgeschaltet, keine automatische Wiedereinschaltung.
+  timeout_shortcut_power_off: Duration,
   //Aktueller Power Zustand
   power_on: bool,
   //Zeitpunkt Power On um On-Meldung verzögert zu liefern. Damit alle Dekoder Zeit haben zu starten.
@@ -53,6 +56,8 @@ pub struct DdlPower {
   impuls_aus: Instant,
   //Letzter Zeitpunkt Booster OK (kein Kurzsschluss) bei nicht siggmode
   kein_shortcut: Instant,
+  //Bei Siggmode: Zeitpunkt, ab dem eine automatische Wiedereinschaltung erlaubt ist
+  sigg_mode_auto_power_on: Option<Instant>,
   //Booster Go Meldung siggmode
   gpio_cts_go_in: SysFsGpioInput,
   //Booster Go Meldung / Shortcut
@@ -70,8 +75,12 @@ impl DdlPower {
   /// * siggmode - Impulse für Booster Start/Stop
   /// * dsr_invers - Inverse Behandlung DSR Booster Shortcut Rückmeldung wenn nicht siggmode
   /// * shortcut_delay - Verzögerung in ms bis Abschaltung wegen Shortcut wenn nicht siggmode
+  /// * timeout_shortcut_power_off - Wenn Siggmode: minimale Power On Zeit damit einmalig bei Ausschaltung
+  ///                                (wegen Kurzschluss) wieder versucht wird einzuschalten.
+  ///                                0 = Ausgeschaltet, keine automatische Wiedereinschaltung.
   pub fn new(
     bus: usize, tx: Sender<SRCPMessage>, siggmode: bool, dsr_invers: bool, shortcut_delay: u64,
+    timeout_shortcut_power_off: u64,
   ) -> DdlPower {
     let mut result = DdlPower {
       bus: bus,
@@ -79,10 +88,12 @@ impl DdlPower {
       siggmode: siggmode,
       dsr_invers: dsr_invers,
       shortcut_delay: Duration::from_millis(shortcut_delay),
+      timeout_shortcut_power_off: Duration::from_millis(timeout_shortcut_power_off),
       power_on: false,
       power_on_zeitpunkt: Instant::now(),
       impuls_aus: Instant::now(),
       kein_shortcut: Instant::now(),
+      sigg_mode_auto_power_on: None,
       gpio_cts_go_in: gpio::sysfs::SysFsGpioInput::open(CTS)
         .expect(format!("GPIO {} konnte nicht geöffnet werden", CTS).as_str()),
       gpio_dsr_go_in: gpio::sysfs::SysFsGpioInput::open(DSR)
@@ -92,11 +103,39 @@ impl DdlPower {
       gpio_dtr_stop_out: gpio::sysfs::SysFsGpioOutput::open(DTR)
         .expect(format!("GPIO {} konnte nicht geöffnet werden", DTR).as_str()),
     };
+    log::debug!(
+      "New DdlPower siggmode={}, dsr_invers={}, shortcut_delay={}, timeout_shortcut_power_off={}",
+      siggmode,
+      dsr_invers,
+      shortcut_delay,
+      timeout_shortcut_power_off
+    );
     //Default setzen, Ausgänge ausgeschaltet
     result.gpio_rts_go_out.set_value(RS232_OFF).unwrap();
     result.gpio_dtr_stop_out.set_value(RS232_OFF).unwrap();
     result
   }
+  /// Siggmode Start-Stopimpulsausgabe
+  /// # Arguments
+  /// * power - true: Startimpuls, false: Stopimpuls
+  fn start_stop_impuls(&mut self, power: bool) {
+    if power {
+      //Startimpuls
+      self.gpio_rts_go_out.set_value(RS232_ON).unwrap();
+      self.gpio_dtr_stop_out.set_value(RS232_OFF).unwrap();
+      self.impuls_aus = Instant::now() + DAUER_START_IMPULS_SIGG_MODE;
+      //Wenn Timeout für auto Wiedereinschaltung vorhanden ist
+      if !self.timeout_shortcut_power_off.is_zero() {
+        self.sigg_mode_auto_power_on = Some(Instant::now() + self.timeout_shortcut_power_off);
+      }
+    } else {
+      //Stopimpuls
+      self.gpio_dtr_stop_out.set_value(RS232_ON).unwrap();
+      self.gpio_rts_go_out.set_value(RS232_OFF).unwrap();
+      self.impuls_aus = Instant::now() + DAUER_STOP_IMPULS_SIGG_MODE;
+    }
+  }
+
   /// Neuer Power Zustand übernehmen
   /// # Arguments
   /// * power - Neuer Power Zustand
@@ -105,17 +144,7 @@ impl DdlPower {
       self.power_on = power;
       self.send_all_info(None);
       if self.siggmode {
-        if power {
-          //Startimpuls
-          self.gpio_rts_go_out.set_value(RS232_ON).unwrap();
-          self.gpio_dtr_stop_out.set_value(RS232_OFF).unwrap();
-          self.impuls_aus = Instant::now() + DAUER_START_IMPULS_SIGG_MODE;
-        } else {
-          //Stopimpuls
-          self.gpio_dtr_stop_out.set_value(RS232_ON).unwrap();
-          self.gpio_rts_go_out.set_value(RS232_OFF).unwrap();
-          self.impuls_aus = Instant::now() + DAUER_STOP_IMPULS_SIGG_MODE;
-        }
+        self.start_stop_impuls(power);
       } else {
         //Booster On mit Dauerausgabe an RTS
         self
@@ -223,12 +252,25 @@ impl SRCPDeviceDDL for DdlPower {
   ///           -> wird hier nicht verwendet, wir sind ja im DDL Device "Power"
   fn execute(&mut self, _power: bool) {
     if self.siggmode {
-      //Start- Stop Impulse aus
+      //Wenn Start- Stop Impuls vorbei sind
       if Instant::now() > self.impuls_aus {
+        //Start- Stop Impulse aus
         self.gpio_rts_go_out.set_value(RS232_OFF).unwrap();
         self.gpio_dtr_stop_out.set_value(RS232_OFF).unwrap();
         //Booster aus Erkennung nach Impulsausgabe
-        let booster_on = self.gpio_cts_go_in.read_value().unwrap() == RS232_ON;
+        let mut booster_on = self.gpio_cts_go_in.read_value().unwrap() == RS232_ON;
+        //Wenn Timeout für auto Wiedereinschaltung vorhanden ist
+        if let Some(sigg_mode_auto_power_on_zeitpunkt) = self.sigg_mode_auto_power_on {
+          //Wenn nun Booster aus ist aber ein sein müsste und Timeout für automatische Wiedereinschaltung erreicht ist
+          //-> automatischer Wiedereinschaltversuch
+          if (!booster_on)
+            && self.is_dev_spezifisch()
+            && (sigg_mode_auto_power_on_zeitpunkt <= Instant::now())
+          {
+            self.start_stop_impuls(true);
+            booster_on = true;
+          }
+        }
         //Aus- und Einschalten vom Booster übernehmen
         self.set_power(booster_on);
       }
