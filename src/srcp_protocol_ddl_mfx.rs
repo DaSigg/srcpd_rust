@@ -386,7 +386,7 @@ impl DdlProtokoll for MfxProtokoll {
       Duration::ZERO,
       false,
       MFX_MAX_LEN,
-      if refresh { 2 } else { 1 }, //Neue Telegramme 2-fach senden
+      if refresh { 1 } else { 2 }, //Neue Telegramme 2-fach senden
     )
   }
 

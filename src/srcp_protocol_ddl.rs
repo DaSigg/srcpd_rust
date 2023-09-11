@@ -36,8 +36,10 @@ pub struct DdlTel {
 impl DdlTel {
   /// Neue Instanz Erstellen
   /// # Arguments
+  /// * adr - GL/GA Adr zu der dieses Tel. gehört. Nur für Debuging relevant.
   /// * hz - Zur Ausgane über SPI notwendige Baurate
   /// * delay - Die minimale Verzögerung in ms vom Start eines zum nächsten Telegramm wenn in "daten" mehr als ein Telegramm vorhanden ist.
+  /// * delay_only2nd - Wenn mehr als zwei Telegramme und ein "delay" vorhanden sind ist bei true der "delay" nur für 2. Telegramm relevant.
   /// * capacity - Initiale reservierte Grösse für Nutzdaten im ersten erstellten Telegramm
   /// * telWiederholungen - Anzahl Wiederholungen beim Senden des Telegrammes
   pub fn new(
