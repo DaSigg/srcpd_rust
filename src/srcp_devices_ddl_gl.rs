@@ -181,17 +181,22 @@ impl DdlGL<'_> {
     &mut self, adr: usize, drivemode: GLDriveMode, v: usize, v_max: usize, funktionen: u64,
     refresh: bool,
   ) {
+    let mut doppelt = false;
     {
       let gl = self.all_gl.get_mut(&adr).unwrap();
       //Speed bezogen auf v_max von Initkommando berechnen
       let speed = (gl.protokoll_speedsteps * v) / v_max;
+      if (gl.speed > 0) && (speed == 0) {
+        //Neu angehalten, zur Sicherheit doppelt senden
+        doppelt = true;
+      }
       //Neuen Zustand speichern
       gl.direction = drivemode;
       gl.speed = speed;
       gl.fnkt = funktionen;
     }
     //Und versenden
-    self.send_gl_tel(adr, refresh);
+    self.send_gl_tel(adr, doppelt, refresh);
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr);
   }
@@ -199,10 +204,11 @@ impl DdlGL<'_> {
   /// Versenden Telegram einer GL.
   /// # Arguments
   /// * adr - GA Adresse
+  /// * doppelt - true: verdoppelte Ausgabe (z.B. wenn Lok neu angehalten wurde)
   /// * refresh - Wenn false: Basistelegram (Fahren) wird immer versendet, zusätzliche Fx Telegramme
   ///             (Protokollabhängig) nur bei Veränderung.
   ///             Wenn true: es wird immer allles versendet (Lok in Refresh Zyklus)
-  fn send_gl_tel(&mut self, adr: usize, refresh: bool) {
+  fn send_gl_tel(&mut self, adr: usize, doppelt: bool, refresh: bool) {
     let gl = &self.all_gl[&adr];
     //Passendes Protokoll / Version suchen
     let mut protokoll = self
@@ -214,6 +220,9 @@ impl DdlGL<'_> {
       .borrow_mut();
     //Basis GL Telegram erzeugen und zum Booster Versenden
     let mut ddl_tel = protokoll.get_gl_new_tel(adr, refresh);
+    if doppelt {
+      ddl_tel.tel_wiederholungen *= 2;
+    }
     protokoll.get_gl_basis_tel(
       adr,
       gl.direction,
@@ -627,7 +636,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       }
     } else {
       //Sobald eine Lok vorhanden ist, Refresh senden
-      self.send_gl_tel(self.adr_refresh, true);
+      self.send_gl_tel(self.adr_refresh, false, true);
     }
   }
 
