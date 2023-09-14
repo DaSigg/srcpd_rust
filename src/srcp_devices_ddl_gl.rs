@@ -5,6 +5,7 @@ use std::{
   time::{Duration, Instant},
 };
 
+use log::info;
 use spidev::Spidev;
 
 use crate::{
@@ -305,6 +306,51 @@ impl DdlGL<'_> {
     }
     count
   }
+
+  /// Neue GL registrieren und als SRCP Info melden
+  /// # Arguments
+  /// * adr - Adresse der GL.
+  /// * protokoll - verwendetes Protokoll
+  /// * protokoll_version - verwendete Version des Protokolls
+  /// * speedsteps - Anzahl Speedsteps mit denen die GL initialisiert ist
+  /// * number_functions - Anzahl verwendete Funktionen
+  /// * optionalParameter - Optionale weitere Paramater wie z.B. bei MFX
+  fn register_new_gl(
+    &mut self, adr: usize, protokoll: &DdlProtokolle, protokoll_version: &str, speedsteps: usize,
+    number_functions: usize, optional_parameter: &mut Vec<String>,
+  ) {
+    self.all_gl.insert(
+      adr,
+      GLInit::new(
+        *protokoll,
+        protokoll_version.to_string(),
+        speedsteps,
+        number_functions,
+      ),
+    );
+    //INFO <bus> GL <adr> <protokoll> <protocolversion> <decoderspeedsteps> <numberofdecoderfunctions> .....
+    //Alles nach GL sind Parameter
+    let mut parameter: Vec<String> = vec![];
+    parameter.push(adr.to_string());
+    parameter.push(protokoll.to_string());
+    parameter.push(protokoll_version.to_string());
+    parameter.push(speedsteps.to_string());
+    parameter.push(number_functions.to_string());
+    parameter.append(optional_parameter);
+
+    self
+      .tx
+      .send(SRCPMessage::new(
+        None,
+        self.bus,
+        SRCPMessageID::Info {
+          info_code: "100".to_string(),
+        },
+        SRCPMessageDevice::GL,
+        parameter,
+      ))
+      .unwrap();
+  }
 }
 
 impl SRCPDeviceDDL for DdlGL<'_> {
@@ -510,28 +556,15 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           };
           protokoll.init_gl(adr, uid, protokoll_number_functions);
         }
-        self.all_gl.insert(
+
+        self.register_new_gl(
           adr,
-          GLInit::new(
-            protokoll,
-            protokoll_version,
-            protokoll_speedsteps,
-            protokoll_number_functions,
-          ),
+          &protokoll,
+          protokoll_version.as_str(),
+          protokoll_speedsteps,
+          protokoll_number_functions,
+          &mut cmd_msg.parameter[5..].to_vec(),
         );
-        //INFO <bus> GL <adr> <protokoll> <protocolversion> <decoderspeedsteps> <numberofdecoderfunctions> .....
-        self
-          .tx
-          .send(SRCPMessage::new(
-            None,
-            cmd_msg.bus,
-            SRCPMessageID::Info {
-              info_code: "100".to_string(),
-            },
-            cmd_msg.device.clone(),
-            cmd_msg.parameter.clone(),
-          ))
-          .unwrap();
         //OK an diese Session
         self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
         //Das hier verwendete Protokoll ist nicht mehr Idle
@@ -660,10 +693,38 @@ impl SRCPDeviceDDL for DdlGL<'_> {
   fn execute(&mut self, power: bool) {
     //Ohne Power macht es auch keinen Sinn Telegramme zu senden
     if power {
-      for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
-        for (_version, prot_impl) in prot_versionen {
+      for (protokoll, prot_versionen) in &self.all_protokolle.clone() {
+        for (version, prot_impl) in prot_versionen {
           if let Some(tel) = prot_impl.borrow_mut().get_protokoll_telegrammme().as_mut() {
             self.send_tel(tel);
+            //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
+            if let Some(daten_rx) = &tel.daten_rx {
+              let mut p = prot_impl.borrow_mut();
+              if let Some(uid) = p.eval_neu_anmeldung(daten_rx) {
+                //Neuer Dekoder gefunden.
+                //Erste freie GL Adresse zuweisen und Initialisieren.
+                for adr in 1..p.get_gl_max_adr() {
+                  if !self.all_gl.contains_key(&adr) {
+                    info!("GL: neue Lok gefunden UID={}, Adr={}", uid, adr);
+                    //TODO: auslesen Optionale Paramater (MFX Lokname und Funktionstypen)
+                    //Es werden mal die im Basistel. enthalten Funktionen als vorhanden angenommen (bei MFX 16).
+                    let anz_f = p.get_gl_anz_f_basis();
+                    //Freie Adresse gefunden
+                    p.init_gl(adr, uid, anz_f);
+                    //Neue GL registrieren und über srcp melden
+                    self.register_new_gl(
+                      adr,
+                      protokoll,
+                      *version,
+                      p.get_gl_max_speed_steps(),
+                      anz_f,
+                      &mut vec![], //TODO: ausgelesene Optionale Parameter
+                    );
+                    break;
+                  }
+                }
+              }
+            }
           }
         }
       }

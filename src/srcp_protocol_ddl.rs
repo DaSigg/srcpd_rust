@@ -29,9 +29,16 @@ pub struct DdlTel {
   /// Es können hier mehrere unabhängige Telegramme zurückgegeben werden. Wenn diese nicht
   /// unmittelbar nacheinander gesendet werden dürfen. z.B. verlangt DCC 5ms zwischen 2 Telegrammen
   /// an die selbe Adresse, was für Fahren und F0-F5 immer der Fall ist.
-  /// Wenn mehr als ein Telegramm zurückgegeben wird, dann erfolgt die Ausgabe immer abwechlungsweise
+  /// Wenn mehr als ein Telegramm zurückgegeben wird und ein Delay verlangt ist, dann erfolgt die Ausgabe immer abwechlungsweise
   /// mit einem Telegramm zu einer anderen Adresse (was auch ein anderes Protokoll sein kann).
   pub daten: Vec<Vec<u8>>,
+  /// Über SPI eingelesene Daten. Normalerweise nicht verwendete, None.
+  /// Wird bei MFX verwendet, die die Erkennung des RDS Signals über SPI IN erfolgt.
+  /// Wenn verwendet sollte das Telegramm nur einmal gesendet werden.
+  /// Ansonsten sind hier nur die mit der letzten Wiederholung empfangenen Daten enthalten.
+  /// Wenn verwendet, dann wird es nur für das letzte Telegramm in "daten" angewandt und die Grösse hier muss genau gleich wie dieses
+  /// letzte Telegramm sein.
+  pub daten_rx: Option<Vec<u8>>,
 }
 impl DdlTel {
   /// Neue Instanz Erstellen
@@ -55,6 +62,7 @@ impl DdlTel {
       delay_only2nd,
       instant_next: None,
       daten: vec![Vec::with_capacity(capacity)],
+      daten_rx: None,
     }
   }
 }
@@ -137,6 +145,8 @@ pub trait DdlProtokoll {
   fn init_gl(&mut self, adr: usize, uid: u32, funk_anz: usize);
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> usize;
+  /// Wieviele Speedsteps werden vom Protokoll unterstützt
+  fn get_gl_max_speed_steps(&self) -> usize;
   /// Liefert die max. erlaubte Schaltmoduladdresse
   fn get_ga_max_adr(&self) -> usize;
   /// Liefert die max. Anzahl der unterstützten Funktionen
@@ -188,9 +198,18 @@ pub trait DdlProtokoll {
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
   fn get_idle_tel(&mut self) -> Option<DdlTel>;
-  /// Liefert zusätzliche, Protokoll spzifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
+  /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
   fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
+    None
+  }
+  /// Auswertung automatische Dekoderanmeldung (z.B. bei MFX).
+  /// Notwendige Telegramme zur Suche müssen über "get_protokoll_telegrammme" ausgegeben und eine Rückmeldung
+  /// verlangt werden.
+  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dess UID zurückgegeben, ansonsten None.
+  /// # Arguments
+  /// * daten_rx : Die beim parallel zum Senden über SPI eingelesenen Daten
+  fn eval_neu_anmeldung(&mut self, _daten_rx: &Vec<u8>) -> Option<u32> {
     None
   }
 }

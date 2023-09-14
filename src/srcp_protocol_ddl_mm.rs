@@ -466,6 +466,16 @@ impl DdlProtokoll for MMProtokoll {
   fn get_gl_max_adr(&self) -> usize {
     MAX_MM_ADRESSE
   }
+  /// Wieviele Speedsteps werden vom Protokoll unterstützt
+  /// Maximale Möglichkeit MM1: 14, ab MM2 28
+  fn get_gl_max_speed_steps(&self) -> usize {
+    match self.version {
+      MmVersion::V1 => 14,
+      MmVersion::V2 => 28,
+      MmVersion::V3 => 28,
+      MmVersion::V5 => 28,
+    }
+  }
   /// Liefert die max. erlaubte Schaltmoduladdresse
   fn get_ga_max_adr(&self) -> usize {
     MAX_MM_GA_ADRESSE

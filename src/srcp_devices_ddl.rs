@@ -61,7 +61,17 @@ pub trait SRCPDeviceDDL {
         .set_value(GpioValue::High)
         .unwrap();
     }
-    let mut transfer = SpidevTransfer::write(ddl_tel.daten[0].as_slice());
+    let mut transfer = match ddl_tel.daten_rx.as_mut() {
+      Some(daten_rx) if ddl_tel.daten.len() == 1 => {
+        assert_eq!(
+          ddl_tel.daten[0].len(),
+          daten_rx.len(),
+          "Bei Verwendung DdlTel::daten_rx muss dessen Länge gleich wie letztes gesendetes Tel sein."
+        );
+        SpidevTransfer::read_write(ddl_tel.daten[0].as_slice(), daten_rx.as_mut_slice())
+      }
+      Some(_) | None => SpidevTransfer::write(ddl_tel.daten[0].as_slice()),
+    };
     transfer.speed_hz = ddl_tel.hz;
     for _ in 0..ddl_tel.tel_wiederholungen {
       spidev

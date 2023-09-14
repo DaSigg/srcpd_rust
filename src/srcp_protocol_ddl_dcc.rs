@@ -267,6 +267,11 @@ impl DdlProtokoll for DccProtokoll {
       DccVersion::V2 => MAX_DCC_GL_ADRESSE_LANG,
     }
   }
+  /// Wieviele Speedsteps werden vom Protokoll unterstützt
+  /// Maximale Möglichkeit DCC: 127
+  fn get_gl_max_speed_steps(&self) -> usize {
+    127
+  }
   /// Liefert die max. erlaubte Schaltmoduladdresse
   fn get_ga_max_adr(&self) -> usize {
     MAX_DCC_GA_ADRESSE

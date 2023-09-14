@@ -58,7 +58,35 @@ const MFX_STARTSTOP_0_BIT: usize = 4;
 ///   Total 52 Bit
 /// 3 Syncs am Schluss (Erfahrung aus MFX im orginal srcpd)
 /// 8 Bit Pause am Anfang und Schluss (Erfahrung aus MFX im orginal srcpd)
-const MFX_MAX_LEN: usize = (MFX_STARTSTOP_0_BIT + 5 + 54 + 8 + 15 + MFX_STARTSTOP_0_BIT) * 2;
+const MFX_MAX_LEN: usize =
+  (MFX_STARTSTOP_0_BIT + 5 + 54 + 8 + 15 + MFX_STARTSTOP_0_BIT) * SPI_BYTES_PRO_BIT;
+/// 6.4ms Pause für 1 Bit RDS Rückmeldung in Anzahl SPI Bytes, Rechnung mit us, 8Bit=1Byte
+const MFX_LEN_PAUSE_6_4_MS: usize = 6400 * SPI_BAUDRATE_MFX_2 as usize / (1000000 * 8);
+/// Länge Tel. Suchen neuer Dekoder mit 1 Bit RDS Rückmeldung
+///   Adresse (7 Bit)
+///   Kommando (6 Bit)
+///   Anzahl Bits (6 Bit)
+///   UID (32 Bit)
+///   CRC (8 Bit)
+///   11.5 Sync
+///   6.4ms Pause
+///   Sync
+///   6.4ms Pause
+///   2 Sync
+const MFX_MAX_LEN_SEARCH_NEW: usize = (MFX_STARTSTOP_0_BIT
+  + 5
+  + 7
+  + 6
+  + 6
+  + 32
+  + 8
+  + (12 * 5)
+  + MFX_LEN_PAUSE_6_4_MS
+  + 5
+  + MFX_LEN_PAUSE_6_4_MS
+  + (2 * 5)
+  + MFX_STARTSTOP_0_BIT)
+  * SPI_BYTES_PRO_BIT;
 
 /// Alle MFX Kommandos im Format (Value, AnzBits)
 type MfxBits = (u32, usize);
@@ -82,6 +110,8 @@ const MFX_CMD_FNKT_F0_F7: MfxBits = (0b0110, 4);
 const MFX_CMD_FNKT_F0_F15: MfxBits = (0b0111, 4);
 /// Kommando Funktionen einzeln
 const MFX_CMD_FNKT_EINZELN: MfxBits = (0b100, 3);
+/// Kommando Suchen neuer Dekoder
+const MFX_CMD_SEARCH_NEW: MfxBits = (0b111010, 6);
 /// Kommando Konfiguration Schienenadresse
 const MFX_CMD_KONFIG_SID: MfxBits = (0b111011, 6);
 /// Kommando UID und Neuanmeldezähler Zentrale
@@ -117,13 +147,21 @@ pub struct MfxProtokoll {
   anz_eins: usize,
   /// Zeitpunkt letztes Versenden UID Zentrale
   zeitpunkt_uid: Instant,
+  /// Aktueller Zustand Suche neuer Dekoder
+  /// Anzahl gefundene Bits
+  search_new_dekoder_bits: u32,
+  /// Anzahl gefundene UID
+  search_new_dekoder_uid: u32,
+  /// Anfangts und Endpositions 1 Bit Rückmeldung im SPI Bytebuffer
+  rds_1_bit_start_pos: usize,
 }
 
 impl MfxProtokoll {
   /// Neue Instanz erstellen
   /// # Arguments
-  /// * version - V1 oder V2
+  /// * version - V0
   /// * uid_zentrale - Zu verwendende UID der Zentrale
+  /// * path_reg_counter_file - File in dem der Neuanmeldezähler gespeichert ist
   pub fn from(
     version: MfxVersion, uid_zentrale: u32, path_reg_counter_file: String,
   ) -> MfxProtokoll {
@@ -151,6 +189,9 @@ impl MfxProtokoll {
       new_sid: [false; MAX_MFX_GL_ADRESSE + 1],
       anz_eins: 0,
       zeitpunkt_uid: Instant::now(),
+      search_new_dekoder_bits: 0,
+      search_new_dekoder_uid: 0,
+      rds_1_bit_start_pos: 0,
     }
   }
 
@@ -223,7 +264,8 @@ impl MfxProtokoll {
   /// Das Tel. darf nicht leer sein, es muss min ein Byte vorher vorhanden sein.
   /// # Arguments
   /// * ddl_tel - Telegramm, bei dem MFX Sync hinzugefügt werden soll
-  fn add_sync(&mut self, ddl_tel: &mut DdlTel) {
+  /// * halb - wenn true wird nur ein halbes Sync.Muster ergänzt (=Pegeländerung)
+  fn add_sync(&mut self, ddl_tel: &mut DdlTel, halb: bool) {
     let last = ddl_tel.daten.len() - 1;
     let daten: &mut Vec<u8> = ddl_tel.daten[last].as_mut();
     let values: (u8, u8) = if *daten.last().unwrap() == 0 {
@@ -236,11 +278,13 @@ impl MfxProtokoll {
     daten.push(values.0);
     daten.push(values.1); //1
     daten.push(values.1);
-    daten.push(values.0); //1 mit Regelverlettzung, keine Flanke zu Beginn
-    daten.push(values.0);
-    daten.push(values.1); //1 mit Regelverlettzung, keine Flanke zu Beginn
-    daten.push(values.0);
-    daten.push(values.0); //0
+    if !halb {
+      daten.push(values.0); //1 mit Regelverlettzung, keine Flanke zu Beginn
+      daten.push(values.0);
+      daten.push(values.1); //1 mit Regelverlettzung, keine Flanke zu Beginn
+      daten.push(values.0);
+      daten.push(values.0); //0
+    }
     self.anz_eins = 0; //Zähler für Bitstuffimg startet jetzt bei 0
   }
   /// Startpegel / Pause und MFX Sync. zum Tel. hinzufügen.
@@ -251,23 +295,31 @@ impl MfxProtokoll {
     for _ in 0..(MFX_STARTSTOP_0_BIT * SPI_BYTES_PRO_BIT) {
       ddl_tel.daten[last].push(0);
     }
-    self.add_sync(ddl_tel);
+    self.add_sync(ddl_tel, false);
   }
+  /// CRC zum Tel. hinzufügen.
+  /// # Arguments
+  /// * ddl_tel - Telegramm, bei dem Startpegel / Pause und MFX Sync hinzugefügt werden soll
+  /// * crc - aktueller CRC berechnet bis und mit letztes Bit vor CRC.
+  fn add_crc(&mut self, ddl_tel: &mut DdlTel, mut crc: u8) {
+    //Abschluss der CRC Berechnung ist mit 8 Bits des CRC 0
+    self.crc((0, 8), &mut crc);
+    self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
+  }
+
   /// CRC und MFX Sync. und Pause zum Abschluss des Tel. hinzufügen.
   /// # Arguments
   /// * ddl_tel - Telegramm, bei dem Startpegel / Pause und MFX Sync hinzugefügt werden soll
   /// * crc - aktueller CRC berechnet bis und mit letztes Bit vor CRC.
-  fn add_crc_ende_sync(&mut self, ddl_tel: &mut DdlTel, mut crc: u8) {
-    //Abschluss der CRC Berechnung ist mit 8 Bits des CRC 0
-    self.crc((0, 8), &mut crc);
-    self.add_bits((crc as u32, 8), ddl_tel, &mut crc);
+  fn add_crc_ende_sync(&mut self, ddl_tel: &mut DdlTel, crc: u8) {
+    self.add_crc(ddl_tel, crc);
     //Ende Sync
-    self.add_sync(ddl_tel);
-    self.add_sync(ddl_tel);
+    self.add_sync(ddl_tel, false);
+    self.add_sync(ddl_tel, false);
     //Vereinzelte MFX Loks funktionieren nicht zuverlässig. Ausser:
     //- 3. Sync am Ende
     //- Pause nach Abschluss.
-    self.add_sync(ddl_tel);
+    self.add_sync(ddl_tel, false);
     let last = ddl_tel.daten.len() - 1;
     for _ in 0..(MFX_STARTSTOP_0_BIT * SPI_BYTES_PRO_BIT) {
       ddl_tel.daten[last].push(0);
@@ -331,6 +383,121 @@ impl MfxProtokoll {
     self.add_bits((self.reg_counter as u32, 16), ddl_tel, &mut crc);
     self.add_crc_ende_sync(ddl_tel, crc);
   }
+
+  /// MFX Paket zur Suche neuer Dekoder versenden
+  /// # Arguments
+  /// * ddl_tel: DDL Telegramm bei dem sas Dekodersuchtelegramm hinzugefügt werden soll
+  fn send_search_new_decoder(&mut self, ddl_tel: &mut DdlTel) {
+    //Format des Bitstreams:
+    //10AAAAAAA111010CCCCCCUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUCCCCCCCC
+    //A=0 (Broadcast)
+    //C=6 Bit Anzahl Bits aus U die im Dekoder übereinstimmen müssen
+    //U=32 Bit UID des Dekoder, der gesucht wird.
+    //C=Checksumme
+    self.add_start_sync(ddl_tel);
+    let mut crc = self.add_adr(0, ddl_tel);
+    self.add_bits(MFX_CMD_SEARCH_NEW, ddl_tel, &mut crc);
+    self.add_bits((self.search_new_dekoder_bits, 6), ddl_tel, &mut crc);
+    self.add_bits((self.search_new_dekoder_uid, 32), ddl_tel, &mut crc);
+    self.add_crc(ddl_tel, crc);
+    //Nun kommt noch der Platz für 1 Bit Rückmeldung
+    //11 oder 11.5 Sync
+    //6.4ms Pause mit 0
+    //Sync
+    //6.4ms Pause mit 1
+    //2 Sync
+    for _ in [0..11] {
+      self.add_sync(ddl_tel, false);
+    }
+    //Pause geht mit 0 weiter, sollte also hier mit 1 aufhören um letzte Flanke zu haben
+    //Wenn nicht: 0.5 Sync ergänzen
+    if *ddl_tel.daten.last().unwrap().last().unwrap() == 0 {
+      self.add_sync(ddl_tel, true);
+    }
+    //Pause 6.4ms mit 0
+    self.rds_1_bit_start_pos = ddl_tel.daten.last().unwrap().len();
+    ddl_tel
+      .daten
+      .last_mut()
+      .unwrap()
+      .resize(self.rds_1_bit_start_pos + MFX_LEN_PAUSE_6_4_MS, 0);
+    //Sync
+    self.add_sync(ddl_tel, false);
+    //Pause 6.4ms mit 0
+    let len = ddl_tel.daten.last().unwrap().len();
+    ddl_tel
+      .daten
+      .last_mut()
+      .unwrap()
+      .resize(len + MFX_LEN_PAUSE_6_4_MS, 1);
+    //2 Sync
+    self.add_sync(ddl_tel, false);
+    self.add_sync(ddl_tel, false);
+    //Und Rückmeldung aktivieren
+    ddl_tel.daten_rx = Some(vec![0; ddl_tel.daten.last().unwrap().len()]);
+  }
+
+  /// Auswertung Ergebnis Dekodersuche.
+  /// Wenn positives Feedback: weiter mit nächstem Bit, zuerst 0, dann 1.
+  /// Wenn 32 Bit gefunden -> neuer Dekoder gefunden.
+  /// Liefert None zurück wenn nichts gefunden wurde, Some(UID) wenn ein neuer Dekoder erkannt wurde
+  /// # Arguments
+  /// * daten_rx: parallel zum Senden eingelesene Daten, Bit = 1 = RDS Feedback war vorhanden
+  fn eval_send_search_new_decoder(&mut self, daten_rx: &Vec<u8>) -> Option<u32> {
+    let mut result = None;
+    //Rückmeldung wird ers 1ms nach Start Rückmeldefenster ausgewertet da von letzter Schaltflanke
+    //noch Schwingungen vorhanden sein könnten die irrtümlich als RDS Signal ausgewertet werden
+    const MFX_LEN_PAUSE_1_MS: usize = MFX_LEN_PAUSE_6_4_MS / 6;
+    let mut anz_1: u32 = 0;
+    for i in self.rds_1_bit_start_pos + MFX_LEN_PAUSE_1_MS
+      ..self.rds_1_bit_start_pos + MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS
+    {
+      anz_1 += u8::count_ones(daten_rx[i]);
+    }
+    //5% der Bits gesetzt, es wird wohl tatsächlich ein Dekoder geantwortet haben und keine Störung sein
+    //War 50% bis PIKO Giruno, hier kommt ein viel schwächeres Signal ... :-(
+    if anz_1 >= (((MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS) * 8 / 20) as u32) {
+      //Positive Rückmeldung erhalten
+      //Wenn bereits 32 Bit gefunden -> Neuer Dekoder gefunden
+      if self.search_new_dekoder_bits >= 32 {
+        info!(
+          "MFX Dekodersuche neu gefunden UID {}",
+          self.search_new_dekoder_uid
+        );
+        result = Some(self.search_new_dekoder_uid);
+        //Für neue Suche bereit machen
+        self.search_new_dekoder_uid = 0;
+        self.search_new_dekoder_bits = 0;
+        //Und Neuanmeldezähler inkrementieren
+        self.reg_counter += 1;
+        self.save_registration_counter();
+      } else {
+        // mit nächstem Bit weiter suchen
+        self.search_new_dekoder_bits += 1;
+        info!(
+          "MFX Dekodersuche UID Bit gefunden. Bit {} UID {}",
+          self.search_new_dekoder_bits, self.search_new_dekoder_uid
+        );
+      }
+    } else {
+      //Wenn die Suche einen Dekoder gefunden hat und das aktuelle Bit 0 war, dann kann nun n och mit 1 probiert werden
+      if self.search_new_dekoder_bits > 0 {
+        let bit = 0x80000000 >> (self.search_new_dekoder_bits - 1);
+        if (self.search_new_dekoder_uid & bit) == 0 {
+          self.search_new_dekoder_uid |= bit;
+        } else {
+          //Weder 0 noch 1 haben zu einer positiven Antwort geführt -> Abbruch
+          warn!(
+            "Abbruch MFX Dekodersuche. Keine Antwort mehr bei Bit {} Aktuelle UID {}",
+            self.search_new_dekoder_bits, self.search_new_dekoder_uid
+          );
+          self.search_new_dekoder_uid = 0;
+          self.search_new_dekoder_bits = 0;
+        }
+      }
+    }
+    result
+  }
 }
 
 impl DdlProtokoll for MfxProtokoll {
@@ -355,6 +522,11 @@ impl DdlProtokoll for MfxProtokoll {
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> usize {
     MAX_MFX_GL_ADRESSE
+  }
+  /// Wieviele Speedsteps werden vom Protokoll unterstützt
+  /// Maximale Möglichkeit MFX: 127
+  fn get_gl_max_speed_steps(&self) -> usize {
+    127
   }
 
   /// Liefert die max. erlaubte Schaltmoduladdresse
@@ -571,14 +743,30 @@ impl DdlProtokoll for MfxProtokoll {
   }
   /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
-  /// Hier für MFX wird periodisch die UID / Neuanmeldezähler der Zentrale versandt
+  /// Hier für MFX wird periodisch die UID / Neuanmeldezähler der Zentrale und Suche
+  /// nach noch nicht angemeldeten Dekodern versandt.
   fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
     let now = Instant::now();
     if now >= (self.zeitpunkt_uid + INTERVALL_UID) {
       self.zeitpunkt_uid = now;
-      self.get_idle_tel()
+      //UID Zentrale und Neuanmeldezähler
+      let mut tel = self.get_idle_tel().unwrap();
+      //Suche neue Dekoder, nächstes Telegramm
+      tel.daten.push(Vec::with_capacity(MFX_MAX_LEN_SEARCH_NEW));
+      self.send_search_new_decoder(&mut tel);
+      Some(tel)
     } else {
       None
     }
+  }
+
+  /// Auswertung automatische Dekoderanmeldung (z.B. bei MFX).
+  /// Notwendige Telegramme zur Suche müssen über "get_protokoll_telegrammme" ausgegeben und eine Rückmeldung
+  /// verlangt werden.
+  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dess UID zurückgegeben, ansonsten None.
+  /// # Arguments
+  /// * daten_rx : Die beim parallel zum Senden über SPI eingelesenen Daten
+  fn eval_neu_anmeldung(&mut self, daten_rx: &Vec<u8>) -> Option<u32> {
+    self.eval_send_search_new_decoder(daten_rx)
   }
 }
