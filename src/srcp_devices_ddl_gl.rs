@@ -695,11 +695,11 @@ impl SRCPDeviceDDL for DdlGL<'_> {
     if power {
       for (protokoll, prot_versionen) in &self.all_protokolle.clone() {
         for (version, prot_impl) in prot_versionen {
-          if let Some(tel) = prot_impl.borrow_mut().get_protokoll_telegrammme().as_mut() {
+          let mut p = prot_impl.borrow_mut();
+          if let Some(tel) = p.get_protokoll_telegrammme().as_mut() {
             self.send_tel(tel);
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
             if let Some(daten_rx) = &tel.daten_rx {
-              let mut p = prot_impl.borrow_mut();
               if let Some(uid) = p.eval_neu_anmeldung(daten_rx) {
                 //Neuer Dekoder gefunden.
                 //Erste freie GL Adresse zuweisen und Initialisieren.
@@ -718,7 +718,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                       *version,
                       p.get_gl_max_speed_steps(),
                       anz_f,
-                      &mut vec![], //TODO: ausgelesene Optionale Parameter
+                      &mut vec![uid.to_string()], //TODO: ausgelesene Optionale Parameter
                     );
                     break;
                   }

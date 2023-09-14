@@ -69,6 +69,7 @@ const MFX_LEN_PAUSE_6_4_MS: usize = 6400 * SPI_BAUDRATE_MFX_2 as usize / (100000
 ///   UID (32 Bit)
 ///   CRC (8 Bit)
 ///   11.5 Sync
+///   Bitfolge "0011"
 ///   6.4ms Pause
 ///   Sync
 ///   6.4ms Pause
@@ -81,6 +82,7 @@ const MFX_MAX_LEN_SEARCH_NEW: usize = (MFX_STARTSTOP_0_BIT
   + 32
   + 8
   + (12 * 5)
+  + 4
   + MFX_LEN_PAUSE_6_4_MS
   + 5
   + MFX_LEN_PAUSE_6_4_MS
@@ -402,6 +404,7 @@ impl MfxProtokoll {
     self.add_crc(ddl_tel, crc);
     //Nun kommt noch der Platz für 1 Bit Rückmeldung
     //11 oder 11.5 Sync
+    //Bitfolge "0011"
     //6.4ms Pause mit 0
     //Sync
     //6.4ms Pause mit 1
@@ -414,6 +417,8 @@ impl MfxProtokoll {
     if *ddl_tel.daten.last().unwrap().last().unwrap() == 0 {
       self.add_sync(ddl_tel, true);
     }
+    //Bitfolge 0011
+    self.add_bits((0b0011, 4), ddl_tel, &mut crc);
     //Pause 6.4ms mit 0
     self.rds_1_bit_start_pos = ddl_tel.daten.last().unwrap().len();
     ddl_tel
@@ -423,13 +428,13 @@ impl MfxProtokoll {
       .resize(self.rds_1_bit_start_pos + MFX_LEN_PAUSE_6_4_MS, 0);
     //Sync
     self.add_sync(ddl_tel, false);
-    //Pause 6.4ms mit 0
+    //Pause 6.4ms mit 1
     let len = ddl_tel.daten.last().unwrap().len();
     ddl_tel
       .daten
       .last_mut()
       .unwrap()
-      .resize(len + MFX_LEN_PAUSE_6_4_MS, 1);
+      .resize(len + MFX_LEN_PAUSE_6_4_MS, 0xFF);
     //2 Sync
     self.add_sync(ddl_tel, false);
     self.add_sync(ddl_tel, false);
@@ -460,17 +465,21 @@ impl MfxProtokoll {
       //Positive Rückmeldung erhalten
       //Wenn bereits 32 Bit gefunden -> Neuer Dekoder gefunden
       if self.search_new_dekoder_bits >= 32 {
-        info!(
-          "MFX Dekodersuche neu gefunden UID {}",
-          self.search_new_dekoder_uid
-        );
-        result = Some(self.search_new_dekoder_uid);
+        if self.search_new_dekoder_uid == 0 {
+          warn!("MFX Dekodersuche Fehler. UID 0 wird ignoriert.");
+        } else {
+          info!(
+            "MFX Dekodersuche neu gefunden UID {}",
+            self.search_new_dekoder_uid
+          );
+          result = Some(self.search_new_dekoder_uid);
+          //Und Neuanmeldezähler inkrementieren
+          self.reg_counter += 1;
+          self.save_registration_counter();
+        }
         //Für neue Suche bereit machen
         self.search_new_dekoder_uid = 0;
         self.search_new_dekoder_bits = 0;
-        //Und Neuanmeldezähler inkrementieren
-        self.reg_counter += 1;
-        self.save_registration_counter();
       } else {
         // mit nächstem Bit weiter suchen
         self.search_new_dekoder_bits += 1;
@@ -737,7 +746,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// Sobald eine GL vorhanden ist, wird keine Idle mehr gesendet, UID Zentrale wird dann periodisch
   /// über get_protokoll_telegrammme im Intervall INTERVALL_UID gesendet
   fn get_idle_tel(&mut self) -> Option<DdlTel> {
-    let mut ddl_tel = self.get_gl_new_tel(0, false);
+    let mut ddl_tel = self.get_gl_new_tel(0, true); //Refresh->nur einnaliges Senden
     self.send_uid_regcounter(&mut ddl_tel);
     Some(ddl_tel)
   }
