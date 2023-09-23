@@ -5,12 +5,14 @@ use std::{
   time::{Duration, Instant},
 };
 
-use log::info;
+use log::{info, warn};
 use spidev::Spidev;
 
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
-  srcp_protocol_ddl::{DdlProtokolle, DdlTel, GLDriveMode, HashMapProtokollVersion},
+  srcp_protocol_ddl::{
+    DdlProtokolle, DdlTel, GLDriveMode, HashMapProtokollVersion, ResultReadGlParameter,
+  },
   srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType},
 };
 
@@ -26,6 +28,7 @@ const MIN_ANZ_GL_NO_DELAY: usize = 15;
 const IDLE_COUNT_MM_DCC: usize = 2;
 
 ///Verwaltung einer initialisierten GL's
+#[derive(Clone)]
 struct GLInit {
   //Aktuelles Fahrtrichtung
   direction: GLDriveMode,
@@ -41,11 +44,15 @@ struct GLInit {
   protokoll_speedsteps: usize,
   //Anzahl Funktionen
   protokoll_number_functions: usize,
+  //Wenn vorhanden: UID der GL
+  protokoll_uid: Option<u32>,
+  //Optionale Init Parameter (z.B. MFX UID, Name, Funktionen)
+  param: Vec<String>,
 }
 impl GLInit {
   fn new(
     protokoll: DdlProtokolle, protokoll_version: String, protokoll_speedsteps: usize,
-    protokoll_number_functions: usize,
+    protokoll_number_functions: usize, protokoll_uid: Option<u32>, param: &Vec<String>,
   ) -> GLInit {
     GLInit {
       protokoll,
@@ -55,6 +62,8 @@ impl GLInit {
       direction: GLDriveMode::Vorwaerts,
       speed: 0,
       fnkt: 0,
+      protokoll_uid,
+      param: param.clone(),
     }
   }
 }
@@ -69,13 +78,20 @@ pub struct DdlGL<'a> {
   ///Alle vorhandenen Protokollimplementierungen mit allen Versionen
   all_protokolle: HashMapProtokollVersion,
   ///Alle initialisierten GL, Key Adresse
-  all_gl: HashMap<usize, GLInit>,
+  all_gl: HashMap<u32, GLInit>,
   ///Letzte GL Adr. die im Refreshzyklus war. 0 solange keine GL vorhanden ist.
-  adr_refresh: usize,
+  adr_refresh: u32,
   ///Alle noch nicht durch GL verwendeten aber vorhandenen Protokolle für Idle Telegramme
   all_idle_protokolle: Vec<DdlProtokolle>,
   ///Buffer für verzögertes senden
   tel_buffer: Vec<DdlTel>,
+  ///GL's, die automatisch angemeldet wurden und bei der noch die optionalen Parameter ausgelesen werden
+  ///Es wird nur immer eine Lok gleichzeitig angemeldet, wenn eine Lok in SM ist "gl_sm", finden keine Anmeldungen statt.
+  ///-> Dies gilt global, über alle Protokolle
+  gl_param_read: Option<u32>,
+  ///Lok in SM, es ist nur immer eine Lok in SM, wenn eine Lok in SM ist, keine Neuanmeldung "gl_param_read"
+  ///-> Dies gilt global, über alle Protokolle
+  gl_sm: Option<usize>,
 }
 
 impl DdlGL<'_> {
@@ -103,6 +119,8 @@ impl DdlGL<'_> {
       adr_refresh: 0,
       all_idle_protokolle,
       tel_buffer: Vec::new(),
+      gl_param_read: None,
+      gl_sm: None,
     }
   }
 
@@ -116,7 +134,7 @@ impl DdlGL<'_> {
     //Format ist GET <bus> GL <addr>
     //Format ist SET <bus> GL <addr> <drivemode> <V> <V_max> <f0> . . <fn>
     if cmd_msg.parameter.len() >= anz_parameter {
-      if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+      if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
         if let Some(_) = self.all_gl.get(&adr) {
           result = true;
         } else {
@@ -144,7 +162,7 @@ impl DdlGL<'_> {
   /// # Arguments
   /// * session_id - None: an alle SRCP Info Clients, sonst nur an den mit SessionID
   /// * adr - GA Adresse -> Muss gültig, d.h. initialisiert sein
-  fn send_info_msg(&self, session_id: Option<u32>, adr: usize) {
+  fn send_info_msg(&self, session_id: Option<u32>, adr: u32) {
     //INFO <bus> GL <addr> <drivemode> <V> <V_max> <f0> . . <fn>
     let Some(gl) = self.all_gl.get(&adr) else {return;};
     let mut param: Vec<String> = vec![
@@ -179,7 +197,7 @@ impl DdlGL<'_> {
   /// * funktionen - f0 bis fn als Bits
   /// * refresh - Aufruf wegen Senden aus Refreshzyklus -> immer alles senden, auch wenn keine Fx Veränderung
   fn send_gl(
-    &mut self, adr: usize, drivemode: GLDriveMode, v: usize, v_max: usize, funktionen: u64,
+    &mut self, adr: u32, drivemode: GLDriveMode, v: usize, v_max: usize, funktionen: u64,
     refresh: bool,
   ) {
     let mut doppelt = false;
@@ -209,7 +227,7 @@ impl DdlGL<'_> {
   /// * refresh - Wenn false: Basistelegram (Fahren) wird immer versendet, zusätzliche Fx Telegramme
   ///             (Protokollabhängig) nur bei Veränderung.
   ///             Wenn true: es wird immer allles versendet (Lok in Refresh Zyklus)
-  fn send_gl_tel(&mut self, adr: usize, doppelt: bool, refresh: bool) {
+  fn send_gl_tel(&mut self, adr: u32, doppelt: bool, refresh: bool) {
     let gl = &self.all_gl[&adr];
     //Passendes Protokoll / Version suchen
     let mut protokoll = self
@@ -307,18 +325,19 @@ impl DdlGL<'_> {
     count
   }
 
-  /// Neue GL registrieren und als SRCP Info melden
+  /// Neue GL registrieren
   /// # Arguments
   /// * adr - Adresse der GL.
   /// * protokoll - verwendetes Protokoll
   /// * protokoll_version - verwendete Version des Protokolls
   /// * speedsteps - Anzahl Speedsteps mit denen die GL initialisiert ist
   /// * number_functions - Anzahl verwendete Funktionen
-  /// * optionalParameter - Optionale weitere Paramater wie z.B. bei MFX
+  /// * uid - Dekoder UID wenn vorhanden
+  /// * param - Optionale, Protokollabhängige Paramater (z.B. MFX UID, Name, Funktionen)
   fn register_new_gl(
-    &mut self, adr: usize, protokoll: &DdlProtokolle, protokoll_version: &str, speedsteps: usize,
-    number_functions: usize, optional_parameter: &mut Vec<String>,
-  ) {
+    &mut self, adr: u32, protokoll: &DdlProtokolle, protokoll_version: &str, speedsteps: usize,
+    number_functions: usize, uid: Option<u32>, param: &Vec<String>,
+  ) -> &GLInit {
     self.all_gl.insert(
       adr,
       GLInit::new(
@@ -326,17 +345,26 @@ impl DdlGL<'_> {
         protokoll_version.to_string(),
         speedsteps,
         number_functions,
+        uid,
+        param,
       ),
     );
+    self.all_gl.get(&adr).unwrap()
+  }
+  /// Neue GL als SRCP Info melden
+  /// # Arguments
+  /// * adr - Adresse der GL.
+  /// * new_gl - Neue GL die gemeldet werden soll
+  fn srcp_info_new_gl(&mut self, adr: u32, new_gl: &GLInit) {
     //INFO <bus> GL <adr> <protokoll> <protocolversion> <decoderspeedsteps> <numberofdecoderfunctions> .....
     //Alles nach GL sind Parameter
     let mut parameter: Vec<String> = vec![];
     parameter.push(adr.to_string());
-    parameter.push(protokoll.to_string());
-    parameter.push(protokoll_version.to_string());
-    parameter.push(speedsteps.to_string());
-    parameter.push(number_functions.to_string());
-    parameter.append(optional_parameter);
+    parameter.push(new_gl.protokoll.to_string());
+    parameter.push(new_gl.protokoll_version.to_string());
+    parameter.push(new_gl.protokoll_speedsteps.to_string());
+    parameter.push(new_gl.protokoll_number_functions.to_string());
+    parameter.extend(new_gl.param.clone());
 
     self
       .tx
@@ -383,7 +411,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                       .unwrap();
                   } else {
                     //Adressprüfung
-                    if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+                    if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
                       if (adr > 0) && (adr <= prot_impl.borrow_mut().get_gl_max_adr()) {
                         //Alle weiteren Parameter ausser "lokname" bei MFX müssen Zahlen >=0 sein
                         result = true;
@@ -450,7 +478,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
         SRCPMessageType::TERM => {
           //Format ist TERM <bus> GL <addr>
           //Adressprüfung
-          if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+          if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
             if self.all_gl.contains_key(&adr) {
               //OK an diese Session
               self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
@@ -530,7 +558,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
         // N <protocolversion> <decoderspeedsteps> <numberofdecoderfunctions> -> DCC
         // X <protocolversion> <decoderspeedsteps> <numberofdecoderfunctions> <lokUid> <"lokname"> <mfxfunctioncode1> ... <mfxfunctioncode16> -> MFX
         //Adresse
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         //Das Protokoll
         let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) else {return};
         //Version
@@ -539,6 +567,8 @@ impl SRCPDeviceDDL for DdlGL<'_> {
         let protokoll_speedsteps = cmd_msg.parameter[3].parse::<usize>().unwrap();
         //numberofdecoderfunctions
         let protokoll_number_functions = cmd_msg.parameter[4].parse::<usize>().unwrap();
+        //UID falls vorhanden
+        let mut uid = None;
         //Protokoll spezifisches Init
         {
           //Passendes Protokoll / Version suchen
@@ -549,22 +579,24 @@ impl SRCPDeviceDDL for DdlGL<'_> {
             .get(protokoll_version.as_str())
             .unwrap()
             .borrow_mut();
-          let uid = if protokoll.uid() {
-            cmd_msg.parameter[5].parse::<u32>().unwrap()
-          } else {
-            0
-          };
+          if protokoll.uid() {
+            uid = Some(cmd_msg.parameter[5].parse::<u32>().unwrap());
+          }
           protokoll.init_gl(adr, uid, protokoll_number_functions);
         }
 
-        self.register_new_gl(
-          adr,
-          &protokoll,
-          protokoll_version.as_str(),
-          protokoll_speedsteps,
-          protokoll_number_functions,
-          &mut cmd_msg.parameter[5..].to_vec(),
-        );
+        let new_gl = self
+          .register_new_gl(
+            adr,
+            &protokoll,
+            protokoll_version.as_str(),
+            protokoll_speedsteps,
+            protokoll_number_functions,
+            uid,
+            &cmd_msg.parameter[5..].to_vec(), //Alle Paramater ab UID
+          )
+          .clone();
+        self.srcp_info_new_gl(adr, &new_gl);
         //OK an diese Session
         self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
         //Das hier verwendete Protokoll ist nicht mehr Idle
@@ -590,7 +622,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       SRCPMessageType::TERM => {
         //Format ist TERM <bus> GL <addr>
         //Adresse
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         let protokoll = self.all_gl.remove(&adr).unwrap().protokoll;
         //Ein Protokoll könnte wieder Idle geworden sein.
         //Märklin & DCC bei < 2, siehe oben
@@ -607,13 +639,13 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       }
       SRCPMessageType::GET => {
         //Format ist GET <bus> GL <addr>
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         //INFO <bus> GL <addr> <drivemode> <V> <V_max> <f0> . . <fn>
         self.send_info_msg(cmd_msg.session_id, adr);
       }
       SRCPMessageType::SET => {
         //Format ist SET <bus> GL <addr> <drivemode> <V> <V_max> <f0> . . <fn>
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         //Da SET verzögert über Queue ausgeführt wird könnte ein TERM dazwischen gekommen sein, Adresse nochmals prüfen
         if self.all_gl.contains_key(&adr) {
           let drivemode = GLDriveMode::from_str(cmd_msg.parameter[1].as_str()).unwrap();
@@ -693,39 +725,93 @@ impl SRCPDeviceDDL for DdlGL<'_> {
   fn execute(&mut self, power: bool) {
     //Ohne Power macht es auch keinen Sinn Telegramme zu senden
     if power {
-      for (protokoll, prot_versionen) in &self.all_protokolle.clone() {
-        for (version, prot_impl) in prot_versionen {
+      for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
+        for (_version, prot_impl) in prot_versionen {
           let mut p = prot_impl.borrow_mut();
-          if let Some(tel) = p.get_protokoll_telegrammme().as_mut() {
+          //SM (keine Loksuche) wenn eine GL in SM ist oder bereits eine auto Anmeldung läuft
+          if let Some(tel) = p
+            .get_protokoll_telegrammme(self.gl_param_read.is_some() || self.gl_sm.is_some())
+            .as_mut()
+          {
             self.send_tel(tel);
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
             if let Some(daten_rx) = &tel.daten_rx {
               if let Some(uid) = p.eval_neu_anmeldung(daten_rx) {
-                //Neuer Dekoder gefunden.
-                //Erste freie GL Adresse zuweisen und Initialisieren.
-                for adr in 1..p.get_gl_max_adr() {
-                  if !self.all_gl.contains_key(&adr) {
-                    info!("GL: neue Lok gefunden UID={}, Adr={}", uid, adr);
-                    //TODO: auslesen Optionale Paramater (MFX Lokname und Funktionstypen)
-                    //Es werden mal die im Basistel. enthalten Funktionen als vorhanden angenommen (bei MFX 16).
-                    let anz_f = p.get_gl_anz_f_basis();
-                    //Freie Adresse gefunden
-                    p.init_gl(adr, uid, anz_f);
-                    //Neue GL registrieren und über srcp melden
-                    self.register_new_gl(
-                      adr,
-                      protokoll,
-                      *version,
-                      p.get_gl_max_speed_steps(),
-                      anz_f,
-                      &mut vec![uid.to_string()], //TODO: ausgelesene Optionale Parameter
-                    );
-                    break;
+                //Noch nicht angemeldeter Dekoder gefunden.
+                //Wenn es die GL mit dieser UID schon gibt, dann wird dessen Adressen verwendet.
+                let mut gl_bekannt = false;
+                for adr in 1..=p.get_gl_max_adr() {
+                  if let Some(gl) = self.all_gl.get(&adr) {
+                    if gl.protokoll_uid.is_some() && (gl.protokoll_uid.unwrap() == uid) {
+                      //Lok gibt es bereits, neue SID Zuordnung auslösen
+                      info!("GL: bekannte Lok gefunden UID={}, Adr={}", uid, adr);
+                      //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
+                      p.init_gl(adr, gl.protokoll_uid, gl.protokoll_number_functions);
+                      gl_bekannt = true;
+                      break;
+                    }
+                  }
+                }
+                //Ansonsten die erste freie GL Adresse zuweisen und Initialisieren.
+                if !gl_bekannt {
+                  for adr in 1..=p.get_gl_max_adr() {
+                    if !self.all_gl.contains_key(&adr) {
+                      info!("GL: neue Lok gefunden UID={}, Adr={}", uid, adr);
+                      //Es werden mal die im Basistel. enthalten Funktionen als vorhanden angenommen (bei MFX 16).
+                      let anz_f = p.get_gl_anz_f_basis();
+                      //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
+                      p.init_gl(adr, Some(uid), anz_f);
+                      //Neue GL ist mal angemeldet, kann prinzipiell verwendet werden.
+                      //Bevor sie über SRCP INFO gemeldet wird, wird noch versucht optionale Parameter auszulesen.
+                      self.gl_param_read = Some(adr);
+                      break;
+                    }
                   }
                 }
               }
             }
           }
+        }
+      }
+      //Optionale GL Parameter für automatisch neu angemeldete GL's lesen
+      if let Some(adr) = self.gl_param_read {
+        let mut send_info = false;
+        //Falls es die GL in der Zwischenzeit nicht mehr gibt
+        if let Some(gl) = self.all_gl.get_mut(&adr) {
+          //Passendes Protokoll / Version suchen
+          let mut protokoll = self
+            .all_protokolle
+            .get(&gl.protokoll)
+            .unwrap()
+            .get(gl.protokoll_version.as_str())
+            .unwrap()
+            .borrow_mut();
+          match protokoll.read_gl_parameter(adr) {
+            ResultReadGlParameter::Busy => (), //In Arbeit, weiter machen
+            ResultReadGlParameter::Error => {
+              warn!(
+                "GL Lokparameter können nicht gelesen werden für Adr {}",
+                adr
+              );
+              //Neue GL über SRCP Info ohne optionale Parameter melden
+              send_info = true;
+              self.gl_param_read = None;
+            }
+            ResultReadGlParameter::Ok(param) => {
+              //Ausgelesene Parameter in GL speichern
+              gl.param.extend(param);
+              //Vollständige SRCP Info Meldung
+              send_info = true;
+              self.gl_param_read = None;
+            }
+          }
+        } else {
+          //GL gibt es nicht mehr, kann hier auch weg.
+          self.gl_param_read = None;
+        }
+        if send_info {
+          let gl = self.all_gl[&adr].clone();
+          self.srcp_info_new_gl(adr, &gl);
         }
       }
     }

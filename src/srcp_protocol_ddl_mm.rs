@@ -48,9 +48,9 @@ static MM_F1_4: &'static [u8] = &[0b0011, 0b0100, 0b0110, 0b0111];
 /// Pause zwischen zwei Speed Paketen für MM5 (nur für MM5 relevant)
 const MM_PAUSE_MM5: Duration = Duration::from_millis(50);
 /// Max. erlaubte Dekoder Adresse (GA und GL)
-const MAX_MM_ADRESSE: usize = 80;
+const MAX_MM_ADRESSE: u32 = 80;
 /// Max. erlaubte GA Adresse (4 GA per Dekoder)
-const MAX_MM_GA_ADRESSE: usize = (MAX_MM_ADRESSE + 1) * 4;
+const MAX_MM_GA_ADRESSE: u32 = (MAX_MM_ADRESSE + 1) * 4;
 /// Implementierung Märklin Motorola Protokoll V1 & 2
 #[derive(PartialEq, Copy, Clone)]
 pub enum MmVersion {
@@ -63,13 +63,13 @@ pub struct MMProtokoll {
   /// Version 1 oder 2, Keine Unterschiede für GA, nur für GL 14 / 28 Fahrstufen, 1 oder 5 Funktionen
   version: MmVersion,
   /// Erkennung Richtungswechsel bei M1, Halten Richtung bei Richtung Nothalt bei M1 und M2
-  old_drive_mode: [GLDriveMode; MAX_MM_ADRESSE + 1],
+  old_drive_mode: [GLDriveMode; MAX_MM_ADRESSE as usize + 1],
   /// Erkennung Funktionswechsel bei M2 & 3
-  old_funktionen: [u64; MAX_MM_ADRESSE + 1],
+  old_funktionen: [u64; MAX_MM_ADRESSE as usize + 1],
   /// Speicherung Speed um F1-F4 Pakete für MM2 & 3, die auch den Speed enthalten, korrekt erzeugen zu können
-  old_speed_for_f1_f4: [usize; MAX_MM_ADRESSE + 1],
+  old_speed_for_f1_f4: [usize; MAX_MM_ADRESSE as usize + 1],
   /// Anzahl Initialisierte Funktionen
-  funk_anz: [usize; MAX_MM_ADRESSE + 1],
+  funk_anz: [usize; MAX_MM_ADRESSE as usize + 1],
 }
 impl MMProtokoll {
   /// Neue Instanz erstellen
@@ -78,10 +78,10 @@ impl MMProtokoll {
   pub fn from(version: MmVersion) -> MMProtokoll {
     MMProtokoll {
       version,
-      old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MM_ADRESSE + 1],
-      old_funktionen: [0; MAX_MM_ADRESSE + 1],
-      old_speed_for_f1_f4: [0; MAX_MM_ADRESSE + 1],
-      funk_anz: [0; MAX_MM_ADRESSE + 1],
+      old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MM_ADRESSE as usize + 1],
+      old_funktionen: [0; MAX_MM_ADRESSE as usize + 1],
+      old_speed_for_f1_f4: [0; MAX_MM_ADRESSE as usize + 1],
+      funk_anz: [0; MAX_MM_ADRESSE as usize + 1],
     }
   }
   /// Pause am MM Anfang und MM 4 Adressbits (trinär codiert)
@@ -90,7 +90,7 @@ impl MMProtokoll {
   /// * ddl_tel - Telegramm, zu dessen letztem Telegramm die Adressbits hinzugefügtw erden sollen
   /// * adr_dekoder - Adresse, die ergänzt werden soll, LSB wird zuerst gesendet, 0..80 erlaubt.
   /// * ga_timing - Impulsverbreituerung 0 für GA's, siehe Kommentar zu MM_BIT_0_0_GA
-  fn add_mm_pause_adr(&self, ddl_tel: &mut DdlTel, mut adr_dekoder: usize, ga_timing: bool) {
+  fn add_mm_pause_adr(&self, ddl_tel: &mut DdlTel, mut adr_dekoder: u32, ga_timing: bool) {
     assert!(adr_dekoder < 81, "MM Max Lokadresse ist 80");
     //Pause am Anfang
     ddl_tel
@@ -252,14 +252,14 @@ impl MMProtokoll {
   /// * ddl_tel - Telegramm in dessen letzten Tel. das Basis Tel. erzeugt werden soll.
   /// * version - Für welche MM Version.
   fn get_gl_basis_tel_raw(
-    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, funktionen: u64,
+    &mut self, adr: u32, drive_mode: GLDriveMode, speed: usize, funktionen: u64,
     ddl_tel: &mut DdlTel, version: MmVersion,
   ) {
     let mut drive_mode_used = drive_mode;
     let mut speed_used = speed;
     if drive_mode == GLDriveMode::Nothalt {
       //Nothalt gibt es nicht -> kein Richtungswechsel, Speed = 0
-      drive_mode_used = self.old_drive_mode[adr];
+      drive_mode_used = self.old_drive_mode[adr as usize];
       speed_used = 0;
     }
     if speed_used > 0 {
@@ -274,7 +274,7 @@ impl MMProtokoll {
           speed_used = 15;
         }
         //Richtungswechsel
-        if drive_mode_used != self.old_drive_mode[adr] {
+        if drive_mode_used != self.old_drive_mode[adr as usize] {
           speed_used = 1;
         }
         self.add_mm1_fnkt_value(
@@ -302,7 +302,7 @@ impl MMProtokoll {
           drive_mode_used,
         );
         //Für die Pakete F1-F4 muss Speed wiederholt werden.
-        self.old_speed_for_f1_f4[adr] = if speed_used == 0 {
+        self.old_speed_for_f1_f4[adr as usize] = if speed_used == 0 {
           0
         } else {
           speed_used - 1 //Wir brauchen hier wieder 0, 1, 2, ... und nicht 0, 2, 3, ...
@@ -339,7 +339,7 @@ impl MMProtokoll {
           drive_mode_used,
         );
         //Für die Pakete F1-F4 muss Speed wiederholt werden.
-        self.old_speed_for_f1_f4[adr] = if speed == 0 {
+        self.old_speed_for_f1_f4[adr as usize] = if speed == 0 {
           0
         } else {
           speed - 1 //Wir brauchen hier wieder 0, 1, 2, ... und nicht 0, 2, 3, ...
@@ -426,17 +426,17 @@ impl MMProtokoll {
         );
         //Für die Pakete F1-F4 wird Basis mit Speed immer nach MM2 erzeugt.
         //Es muss dazu der Speed "sFS2"/speed_full_step wiederholt werden.
-        self.old_speed_for_f1_f4[adr] = if speed_full_step == 0 {
+        self.old_speed_for_f1_f4[adr as usize] = if speed_full_step == 0 {
           0
         } else {
           speed_full_step - 1 //Wir brauchen hier wieder 0, 1, 2, ... und nicht 0, 2, 3, ...
         };
       }
     }
-    self.old_drive_mode[adr] = drive_mode_used;
+    self.old_drive_mode[adr as usize] = drive_mode_used;
     //und noch F0 übernehmen
-    self.old_funktionen[adr] &= !1; //F0 löschen
-    self.old_funktionen[adr] |= funktionen & 1; //und neu übernehmen löschen
+    self.old_funktionen[adr as usize] &= !1; //F0 löschen
+    self.old_funktionen[adr as usize] |= funktionen & 1; //und neu übernehmen löschen
   }
 
   /// MM Paket vervollständigen (für alle Telegramme, falls mehrere vorhanden sind):
@@ -459,11 +459,11 @@ impl DdlProtokoll for MMProtokoll {
   /// * uid - UID des Dekoders -> hier nicht verwendet
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
-  fn init_gl(&mut self, adr: usize, _uid: u32, funk_anz: usize) {
-    self.funk_anz[adr] = funk_anz;
+  fn init_gl(&mut self, adr: u32, _uid: Option<u32>, funk_anz: usize) {
+    self.funk_anz[adr as usize] = funk_anz;
   }
   /// Liefert die max. erlaubte Lokadresse
-  fn get_gl_max_adr(&self) -> usize {
+  fn get_gl_max_adr(&self) -> u32 {
     MAX_MM_ADRESSE
   }
   /// Wieviele Speedsteps werden vom Protokoll unterstützt
@@ -477,7 +477,7 @@ impl DdlProtokoll for MMProtokoll {
     }
   }
   /// Liefert die max. erlaubte Schaltmoduladdresse
-  fn get_ga_max_adr(&self) -> usize {
+  fn get_ga_max_adr(&self) -> u32 {
     MAX_MM_GA_ADRESSE
   }
   /// Liefert die max. Anzahl der unterstützten Funktionen
@@ -500,7 +500,7 @@ impl DdlProtokoll for MMProtokoll {
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
-  fn get_gl_new_tel(&self, adr: usize, refresh: bool) -> DdlTel {
+  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_MAERKLIN_LOCO_2,
@@ -528,7 +528,7 @@ impl DdlProtokoll for MMProtokoll {
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis"
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_gl_basis_tel(
-    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, _speed_steps: usize,
+    &mut self, adr: u32, drive_mode: GLDriveMode, speed: usize, _speed_steps: usize,
     funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
     self.get_gl_basis_tel_raw(adr, drive_mode, speed, funktionen, ddl_tel, self.version);
@@ -542,27 +542,25 @@ impl DdlProtokoll for MMProtokoll {
   /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt ab "get_Anz_F_Basis"
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_gl_zusatz_tel(
-    &mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel,
-  ) {
+  fn get_gl_zusatz_tel(&mut self, adr: u32, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel) {
     //Für MM1 gibt es hier nichts zu tun, nur F0 im Basistelegramm
     if self.version != MmVersion::V1 {
-      let funk_anz = self.funk_anz[adr];
+      let funk_anz = self.funk_anz[adr as usize];
       //Nun noch F1-4, jedoch nur bei Veränderung sofort senden
       for i in 1..self.get_gl_anz_f() {
         if i >= funk_anz {
           break;
         }
         let mask: u64 = 1 << i;
-        if (((self.old_funktionen[adr] ^ funktionen) & mask) != 0) || refresh {
+        if (((self.old_funktionen[adr as usize] ^ funktionen) & mask) != 0) || refresh {
           //Veränderung oder immer verlangt
           //Neues Telegramm erzeugen
           ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
           //Als Basis Standard Fahren Telegramm verwenden und dieses dann auf F1-4 ändern
           self.get_gl_basis_tel_raw(
             adr,
-            self.old_drive_mode[adr],
-            self.old_speed_for_f1_f4[adr],
+            self.old_drive_mode[adr as usize],
+            self.old_speed_for_f1_f4[adr as usize],
             funktionen,
             ddl_tel,
             MmVersion::V2, //Hier immer V2, keine 1/2 Speed Steps für V3, für V5 ergibt dies das 2. Telegramm
@@ -590,12 +588,12 @@ impl DdlProtokoll for MMProtokoll {
       }
     }
     self.complete_mm_paket(ddl_tel);
-    self.old_funktionen[adr] = funktionen;
+    self.old_funktionen[adr as usize] = funktionen;
   }
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
-  fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
+  fn get_ga_new_tel(&self, adr: u32) -> DdlTel {
     //Neue neue Kommandos, kein Refresh -> 2-fach senden
     DdlTel::new(
       adr,
@@ -612,11 +610,11 @@ impl DdlProtokoll for MMProtokoll {
   /// * port - Port auf dem Schaltdekoder
   /// * value - Gewünschter Zustand des Port Ein/Aus
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_ga_tel(&self, adr: usize, port: usize, value: bool, ddl_tel: &mut DdlTel) {
+  fn get_ga_tel(&self, adr: u32, port: usize, value: bool, ddl_tel: &mut DdlTel) {
     //Dekoderadresse: 4 Ausgangspaare auf Dekoder, deshalb adr/4
     let adr_dekoder = (adr - 1) >> 2;
     //Subadresse auf Dekoder ist welches der 4 Paare plus Port
-    let sub_adr = (((adr - 1) & 3) << 1) + (port & 1);
+    let sub_adr = (((adr as usize - 1) & 3) << 1) + (port & 1);
     self.add_mm_pause_adr(ddl_tel, adr_dekoder, true);
     self.add_mm1_fnkt_value(
       ddl_tel,

@@ -5,11 +5,9 @@
 //! 25.03.23 Basisversion
 
 use configparser::ini::Ini;
-use log::{error, info, warn};
-use nix::{
-  libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM},
-};
 use fork::{fork, Fork};
+use log::{error, info, warn};
+use nix::libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use signal_hook::iterator::Signals;
 use srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType};
 use std::{
@@ -29,6 +27,7 @@ mod srcp_devices_ddl;
 mod srcp_devices_ddl_ga;
 mod srcp_devices_ddl_gl;
 mod srcp_devices_ddl_power;
+mod srcp_mfx_rds;
 mod srcp_protocol_ddl;
 mod srcp_protocol_ddl_dcc;
 mod srcp_protocol_ddl_mfx;
@@ -176,13 +175,13 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
   if cmd_line_config.fork {
     info!("fork()");
     match fork() {
-     Ok(Fork::Parent(child)) => {
+      Ok(Fork::Parent(child)) => {
         //PID File schreiben
         write_pidfile(child);
         return Ok(());
-     }
-     Ok(Fork::Child) => (),
-     Err(_) => error!("Fork failed"),
+      }
+      Ok(Fork::Child) => (),
+      Err(_) => error!("Fork failed"),
     }
   }
   //Configfile lesen

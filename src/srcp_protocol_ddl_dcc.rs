@@ -17,12 +17,12 @@ static DCC_BIT_1: &'static [u8] = &[0xFF, 0x00]; //1
 static DCC_BIT_0: &'static [u8] = &[0xFF, 0xFF, 0x00, 0x00]; //0
 
 /// Max. erlaubte GL Kurz-Adresse (V1, 7 Bit)
-const MAX_DCC_GL_ADRESSE_KURZ: usize = 127;
+const MAX_DCC_GL_ADRESSE_KURZ: u32 = 127;
 /// Max. erlaubte GL Lang-Adresse (V2, 14 Bit)
-const MAX_DCC_GL_ADRESSE_LANG: usize = 10239;
+const MAX_DCC_GL_ADRESSE_LANG: u32 = 10239;
 /// Max. erlaubte GA Adresse gem. NMRA S-9.2.1 Dekoder mit 4*2 Ausgängen, 9 Bit für Dekoder Adresse
 /// Dekoderadresse 0x1FF ist reserviert für Broadcast, es bleiben also inkl. Adr 0 511 Dekoderadressen.
-const MAX_DCC_GA_ADRESSE: usize = 511 * 4;
+const MAX_DCC_GA_ADRESSE: u32 = 511 * 4;
 /// Anzahl sync. Bits
 const ANZ_DCC_SYNC: usize = 16;
 /// Verzögerung zwischen zwei Frames an selbe Adresse zwischen Stop- und Startbit ist 5ms.
@@ -93,11 +93,11 @@ pub struct DccProtokoll {
   /// Version 1 oder 2, Keine Unterschiede für GA, nur kurze Lange GL Adr.
   version: DccVersion,
   /// Halten Richtung bei Richtung Nothalt
-  old_drive_mode: [GLDriveMode; MAX_DCC_GL_ADRESSE_LANG + 1],
+  old_drive_mode: [GLDriveMode; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
   /// Erkennung Funktionswechsel für die nicht immer gesendeten höheren Fx
-  old_funktionen: [u64; MAX_DCC_GL_ADRESSE_LANG + 1],
+  old_funktionen: [u64; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
   /// Anzahl Initialisierte Funktionen
-  funk_anz: [usize; MAX_DCC_GL_ADRESSE_LANG + 1],
+  funk_anz: [usize; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
 }
 
 impl DccProtokoll {
@@ -107,9 +107,9 @@ impl DccProtokoll {
   pub fn from(version: DccVersion) -> DccProtokoll {
     DccProtokoll {
       version,
-      old_drive_mode: [GLDriveMode::Vorwaerts; MAX_DCC_GL_ADRESSE_LANG + 1],
-      old_funktionen: [0; MAX_DCC_GL_ADRESSE_LANG + 1],
-      funk_anz: [0; MAX_DCC_GL_ADRESSE_LANG + 1],
+      old_drive_mode: [GLDriveMode::Vorwaerts; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
+      old_funktionen: [0; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
+      funk_anz: [0; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
     }
   }
 
@@ -157,7 +157,7 @@ impl DccProtokoll {
   /// # Arguments
   /// * ddl_tel - Telegramm, bei dem die Adresse ergänzt werden soll
   /// * adr - Die Adresse
-  fn add_adr(&self, ddl_tel: &mut DdlTel, adr: usize) -> u8 {
+  fn add_adr(&self, ddl_tel: &mut DdlTel, adr: u32) -> u8 {
     let mut xor: u8 = 0;
     if adr <= MAX_DCC_GL_ADRESSE_KURZ {
       self.add_byte(ddl_tel, (adr & 0xFF).try_into().unwrap(), &mut xor);
@@ -226,11 +226,11 @@ impl DccProtokoll {
   /// * ddl_cmd - Das zu setzende DDL Kommandobyte
   /// * refersh - true wenn Refreshkommando, telegramm wird auch erzeugt wenn keine Veränderung
   fn add_f13_f68(
-    &self, ddl_tel: &mut DdlTel, adr: usize, funktionen: u64, mask: u64, shift: usize, ddl_cmd: u8,
+    &self, ddl_tel: &mut DdlTel, adr: u32, funktionen: u64, mask: u64, shift: usize, ddl_cmd: u8,
     refresh: bool,
   ) {
     //Auf Veränderungen prüfen
-    if (((self.old_funktionen[adr] ^ funktionen) & mask) != 0) || refresh {
+    if (((self.old_funktionen[adr as usize] ^ funktionen) & mask) != 0) || refresh {
       //Worst case Länge: 2 Bytes Adresse + 2 Nutzbytes
       ddl_tel.daten.push(Vec::with_capacity(
         DCC_MAX_LEN_BASIS + 4 * DCC_MAX_LEN_PRO_BYTE,
@@ -257,11 +257,11 @@ impl DdlProtokoll for DccProtokoll {
   /// * uid - UID des Dekoders -> hier nicht verwendet
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
-  fn init_gl(&mut self, adr: usize, _uid: u32, funk_anz: usize) {
-    self.funk_anz[adr] = funk_anz;
+  fn init_gl(&mut self, adr: u32, _uid: Option<u32>, funk_anz: usize) {
+    self.funk_anz[adr as usize] = funk_anz;
   }
   /// Liefert die max. erlaubte Lokadresse
-  fn get_gl_max_adr(&self) -> usize {
+  fn get_gl_max_adr(&self) -> u32 {
     match self.version {
       DccVersion::V1 => MAX_DCC_GL_ADRESSE_KURZ,
       DccVersion::V2 => MAX_DCC_GL_ADRESSE_LANG,
@@ -273,7 +273,7 @@ impl DdlProtokoll for DccProtokoll {
     127
   }
   /// Liefert die max. erlaubte Schaltmoduladdresse
-  fn get_ga_max_adr(&self) -> usize {
+  fn get_ga_max_adr(&self) -> u32 {
     MAX_DCC_GA_ADRESSE
   }
   /// Liefert die max. Anzahl der unterstützten Funktionen
@@ -292,7 +292,7 @@ impl DdlProtokoll for DccProtokoll {
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
-  fn get_gl_new_tel(&self, adr: usize, refresh: bool) -> DdlTel {
+  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_NMRA_2,
@@ -314,7 +314,7 @@ impl DdlProtokoll for DccProtokoll {
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis"
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_gl_basis_tel(
-    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, speed_steps: usize,
+    &mut self, adr: u32, drive_mode: GLDriveMode, speed: usize, speed_steps: usize,
     funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
     //Prüfung Gültigkeit Adresse
@@ -323,11 +323,11 @@ impl DdlProtokoll for DccProtokoll {
     assert!(speed <= speed_steps, "DCC Speed > Speed Steps");
     //Drivemode für Richtung, wenn Nothalt dann der letzte
     let drive_mode_used: GLDriveMode = if drive_mode == GLDriveMode::Nothalt {
-      self.old_drive_mode[adr]
+      self.old_drive_mode[adr as usize]
     } else {
       drive_mode
     };
-    self.old_drive_mode[adr] = drive_mode_used;
+    self.old_drive_mode[adr as usize] = drive_mode_used;
     //Speed 1 = Nothalt
     let speed_used = if drive_mode == GLDriveMode::Nothalt {
       1
@@ -391,8 +391,8 @@ impl DdlProtokoll for DccProtokoll {
 
     //Nur wenn notwendig: F0..F4 Telegramm
     //Je nach Speedsteps muss F0 hier berücksichtigt werden oder nicht
-    if ((self.funk_anz[adr] > 0) && (speed_steps > SPEED_STEP_4BIT))
-      || ((self.funk_anz[adr] > 1) && (speed_steps <= SPEED_STEP_4BIT))
+    if ((self.funk_anz[adr as usize] > 0) && (speed_steps > SPEED_STEP_4BIT))
+      || ((self.funk_anz[adr as usize] > 1) && (speed_steps <= SPEED_STEP_4BIT))
     {
       //Und nun noch F0 bis F5. Da 5ms Pause zwischen 2 DCC Telegrammen an selbe Adresse notwendig ist,
       //als 2. unabhängigs Telegramm.
@@ -415,8 +415,8 @@ impl DdlProtokoll for DccProtokoll {
       self.add_xor(ddl_tel, &mut xor);
     }
     //F0..F4 übernehmen
-    self.old_funktionen[adr] &= !BIT_MASK_F0_F4;
-    self.old_funktionen[adr] |= funktionen & BIT_MASK_F0_F4;
+    self.old_funktionen[adr as usize] &= !BIT_MASK_F0_F4;
+    self.old_funktionen[adr as usize] |= funktionen & BIT_MASK_F0_F4;
   }
   /// Erzeugt das / die Fx Zusatztelegramm(e) für GL.
   /// - Funktionen nach "get_Anz_F_Basis"
@@ -427,12 +427,10 @@ impl DdlProtokoll for DccProtokoll {
   /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt ab "get_Anz_F_Basis"
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_gl_zusatz_tel(
-    &mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel,
-  ) {
-    let funk_anz = self.funk_anz[adr];
+  fn get_gl_zusatz_tel(&mut self, adr: u32, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel) {
+    let funk_anz = self.funk_anz[adr as usize];
     //F5..F8 auf Veränderungen prüfen
-    if ((((self.old_funktionen[adr] ^ funktionen) & BIT_MASK_F5_F8) != 0) || refresh)
+    if ((((self.old_funktionen[adr as usize] ^ funktionen) & BIT_MASK_F5_F8) != 0) || refresh)
       && (funk_anz > 5)
     {
       //Worst case Länge: 2 Bytes Adresse + 1 Nutzbyte
@@ -447,7 +445,7 @@ impl DdlProtokoll for DccProtokoll {
       self.add_xor(ddl_tel, &mut xor);
     }
     //F9..F12 auf Veränderungen prüfen
-    if ((((self.old_funktionen[adr] ^ funktionen) & BIT_MASK_F9_F12) != 0) || refresh)
+    if ((((self.old_funktionen[adr as usize] ^ funktionen) & BIT_MASK_F9_F12) != 0) || refresh)
       && (funk_anz > 9)
     {
       //Worst case Länge: 2 Bytes Adresse + 1 Nutzbyte
@@ -539,13 +537,13 @@ impl DdlProtokoll for DccProtokoll {
       );
     }
     //Alles ab F5 übernehmen
-    self.old_funktionen[adr] &= 0b11111;
-    self.old_funktionen[adr] |= funktionen & !0b11111;
+    self.old_funktionen[adr as usize] &= 0b11111;
+    self.old_funktionen[adr as usize] |= funktionen & !0b11111;
   }
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
-  fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
+  fn get_ga_new_tel(&self, adr: u32) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_NMRA_2,
@@ -561,13 +559,13 @@ impl DdlProtokoll for DccProtokoll {
   /// * port - Port auf dem Schaltdekoder
   /// * value - Gewünschter Zustand des Port Ein/Aus
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_ga_tel(&self, adr: usize, port: usize, value: bool, ddl_tel: &mut DdlTel) {
+  fn get_ga_tel(&self, adr: u32, port: usize, value: bool, ddl_tel: &mut DdlTel) {
     self.add_sync(ddl_tel);
     let mut xor: u8 = 0;
     /* calculate the real address of the decoder and the pair number
      * of the switch */
-    let address = (adr - 1) / 4;
-    let pairnr = (adr - 1) % 4;
+    let address = (adr as usize - 1) / 4;
+    let pairnr = (adr as usize - 1) % 4;
     /* address byte: 10AAAAAA (lower 6 bits) */
     self.add_byte(
       ddl_tel,

@@ -31,7 +31,7 @@ impl GAInit {
 
 ///Verwaltung automatisches Ausschalten nach Delay
 struct GAAutoOff {
-  adr: usize,
+  adr: u32,
   port: usize,
   off_zeit: Instant,
 }
@@ -46,7 +46,7 @@ pub struct DdlGA<'a> {
   //Alle vorhandenen Protokollimplementierungen mit allen Versionen
   all_protokolle: HashMapProtokollVersion,
   //Alle initialisierten GA, Key Adresse
-  all_ga: HashMap<usize, GAInit>,
+  all_ga: HashMap<u32, GAInit>,
   //Verwaltung aller GA die nach Delayzeit noch automatisch ausgeschaltet werden müssen
   all_ga_auto_off: Vec<GAAutoOff>,
 }
@@ -82,7 +82,7 @@ impl DdlGA<'_> {
     //Format ist GET <bus> GA <addr> <port>
     //Format ist SET <bus> GA <addr> <port> <value> <time>
     if cmd_msg.parameter.len() >= anz_parameter {
-      if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+      if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
         if let Some(ga) = self.all_ga.get(&adr) {
           //Wenn Adr initialisiert ist muss noch Port gültig sein
           if let Ok(port) = cmd_msg.parameter[1].parse::<usize>() {
@@ -127,7 +127,7 @@ impl DdlGA<'_> {
   /// * adr - GA Adresse
   /// * port - GA Port
   /// * value - GA Port Zustand
-  fn send_info_msg(&self, session_id: Option<u32>, adr: usize, port: usize, value: bool) {
+  fn send_info_msg(&self, session_id: Option<u32>, adr: u32, port: usize, value: bool) {
     //INFO <bus> GA <adr> <port> <value>
     self
       .tx
@@ -156,7 +156,7 @@ impl DdlGA<'_> {
   /// * adr - GA Adresse
   /// * port - GA Port
   /// * value - Gewünschter Output Zustand
-  fn send_ga(&mut self, adr: usize, port: usize, value: bool) {
+  fn send_ga(&mut self, adr: u32, port: usize, value: bool) {
     //Neuen Zustand speichern
     self.all_ga.get_mut(&adr).unwrap().value[port] = value;
     let protokoll = self.all_ga[&adr].protokoll;
@@ -194,7 +194,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
                 //Keine Protokollversionsangabe bei INIT GA -> immer die erste vorhandene Version verwenden
                 let prot_impl = protokolle_impl.values().next().unwrap();
                 //Adressprüfung
-                if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+                if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
                   if (adr > 0) && (adr <= prot_impl.borrow_mut().get_ga_max_adr()) {
                     //OK an diese Session
                     self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
@@ -241,7 +241,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         SRCPMessageType::TERM => {
           //Format ist TERM <bus> GA <addr>
           //Adressprüfung
-          if let Ok(adr) = cmd_msg.parameter[0].parse::<usize>() {
+          if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
             if self.all_ga.contains_key(&adr) {
               //OK an diese Session
               self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
@@ -301,7 +301,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         //Zuerst das Protokoll
         let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) else {return};
         //Adresse
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         self.all_ga.insert(adr, GAInit::new(protokoll));
         //INFO <bus> GA <adr> <protokoll>
         self
@@ -320,19 +320,19 @@ impl SRCPDeviceDDL for DdlGA<'_> {
       SRCPMessageType::TERM => {
         //Format ist TERM <bus> GA <addr>
         //Adresse
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         self.all_ga.remove(&adr);
       }
       SRCPMessageType::GET => {
         //Format ist GET <bus> GA <addr> <port>
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         let port = cmd_msg.parameter[1].parse::<usize>().unwrap();
         let ga = &self.all_ga[&adr];
         //INFO <bus> GA <adr> <port> <value>
         self.send_info_msg(cmd_msg.session_id, adr, port, ga.value[port]);
       }
       SRCPMessageType::SET => {
-        let adr = cmd_msg.parameter[0].parse::<usize>().unwrap();
+        let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         //Da SET verzögert über Queue ausgeführt wird könnte ein TERM dazwischen gekommen sein, Adresse nochmals prüfen
         if self.all_ga.contains_key(&adr) {
           let port = cmd_msg.parameter[1].parse::<usize>().unwrap();

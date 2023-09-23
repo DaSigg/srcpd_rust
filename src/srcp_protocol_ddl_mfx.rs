@@ -1,11 +1,16 @@
 use std::{
   fs,
+  sync::mpsc::{self, Receiver, Sender},
+  thread,
   time::{Duration, Instant},
 };
 
 use log::{info, warn};
 
-use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
+use crate::{
+  srcp_mfx_rds::{MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob, MfxRdsJobAns},
+  srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode, ResultReadGlParameter},
+};
 
 //SPI Baudrate für MFX.
 //Auch hier müssen wir auf sicher 96 Bytes kommen um im DMA Modus zu sein und keine Pause zwischen den Bytes zu haben.
@@ -36,7 +41,7 @@ const SPI_BYTES_PRO_BIT: usize = 2;
 const SPI_BAUDRATE_MFX_2: u32 = SPI_BAUDRATE_MFX * (SPI_BYTES_PRO_BIT as u32);
 
 /// Max. erlaubte GL Adresse (14 Bit)
-const MAX_MFX_GL_ADRESSE: usize = 2_usize.pow(14) - 1;
+const MAX_MFX_GL_ADRESSE: u32 = 2_u32.pow(14) - 1;
 
 /// Pause vor und nach MFX Paket (Erfahrung aus MFX im orginal srcpd)
 const MFX_STARTSTOP_0_BIT: usize = 4;
@@ -62,6 +67,11 @@ const MFX_MAX_LEN: usize =
   (MFX_STARTSTOP_0_BIT + 5 + 54 + 8 + 15 + MFX_STARTSTOP_0_BIT) * SPI_BYTES_PRO_BIT;
 /// 6.4ms Pause für 1 Bit RDS Rückmeldung in Anzahl SPI Bytes, Rechnung mit us, 8Bit=1Byte
 const MFX_LEN_PAUSE_6_4_MS: usize = 6400 * SPI_BAUDRATE_MFX_2 as usize / (1000000 * 8);
+/// Anzahl Bits für eine RDS Rückmeldeperiode Periode berechnen (+1 um Integer Abrundung der Division aufzurunden)
+const BITS_PER_RDSSYNC_PERIOD: usize = 912 * SPI_BAUDRATE_MFX_2 as usize / 1000000 + 1;
+const BITS_PER_RDSSYNC_IMP: usize = 25 * SPI_BAUDRATE_MFX_2 as usize / 1000000;
+const BITS_PER_RDSSYNC_PAUSE_PERIOD: usize = BITS_PER_RDSSYNC_PERIOD - BITS_PER_RDSSYNC_IMP;
+const BITS_PER_RDSSYNC_PAUSE_HALF: usize = (BITS_PER_RDSSYNC_PERIOD / 2) - BITS_PER_RDSSYNC_IMP;
 /// Länge Tel. Suchen neuer Dekoder mit 1 Bit RDS Rückmeldung
 ///   Adresse (7 Bit)
 ///   Kommando (6 Bit)
@@ -112,6 +122,10 @@ const MFX_CMD_FNKT_F0_F7: MfxBits = (0b0110, 4);
 const MFX_CMD_FNKT_F0_F15: MfxBits = (0b0111, 4);
 /// Kommando Funktionen einzeln
 const MFX_CMD_FNKT_EINZELN: MfxBits = (0b100, 3);
+/// Kommando Read CV
+const MFX_CMD_CV_READ: MfxBits = (0b111000, 6);
+/// Kommando Write CV
+const MFX_CMD_CV_WRITE: MfxBits = (0b111001, 6);
 /// Kommando Suchen neuer Dekoder
 const MFX_CMD_SEARCH_NEW: MfxBits = (0b111010, 6);
 /// Kommando Konfiguration Schienenadresse
@@ -136,15 +150,15 @@ pub struct MfxProtokoll {
   /// Pfad zum File zur Speicherung Neuanmeldezähler
   path_reg_counter_file: String,
   /// Halten Richtung bei Richtung Nothalt
-  old_drive_mode: [GLDriveMode; MAX_MFX_GL_ADRESSE + 1],
+  old_drive_mode: [GLDriveMode; MAX_MFX_GL_ADRESSE as usize + 1],
   /// Erkennung Funktionswechsel für die nicht immer gesendeten höheren Fx
-  old_funktionen: [u64; MAX_MFX_GL_ADRESSE + 1],
+  old_funktionen: [u64; MAX_MFX_GL_ADRESSE as usize + 1],
   /// Dekoder UID's
-  uid: [u32; MAX_MFX_GL_ADRESSE + 1],
+  uid: [u32; MAX_MFX_GL_ADRESSE as usize + 1],
   /// Anzahl Initialisierte Funktionen
-  funk_anz: [usize; MAX_MFX_GL_ADRESSE + 1],
+  funk_anz: [usize; MAX_MFX_GL_ADRESSE as usize + 1],
   /// Muss neue Schienenadr. Zuordung gesendet werden?
-  new_sid: [bool; MAX_MFX_GL_ADRESSE + 1],
+  new_sid: [bool; MAX_MFX_GL_ADRESSE as usize + 1],
   /// Anzahl aufeinander folgende 1er für MFX Bitstuffing. Wird mit "add_start_sync" auf 0 gesetzt.
   anz_eins: usize,
   /// Zeitpunkt letztes Versenden UID Zentrale
@@ -156,6 +170,14 @@ pub struct MfxProtokoll {
   search_new_dekoder_uid: u32,
   /// Anfangts und Endpositions 1 Bit Rückmeldung im SPI Bytebuffer
   rds_1_bit_start_pos: usize,
+  /// Channel für Aufträge an RDS Thread
+  tx_to_rds: Sender<MfxRdsJob>,
+  /// Channel für Antworten von RDS Thread
+  rx_from_rds: Receiver<MfxRdsJobAns>,
+  /// Channel für Tel. Sendeaufträge vom RDS Thread
+  rx_tel_from_rds: Receiver<MfxCvTel>,
+  /// Wenn das lesen von Lokparametern im Gange ist, ist hier die Adresse dieser Lok enthalten
+  read_gl_parameter: Option<u32>,
 }
 
 impl MfxProtokoll {
@@ -179,21 +201,40 @@ impl MfxProtokoll {
       )
     }
     info!("MfxProtokoll Start mit Neuanmeldezähler={reg_counter}");
+    //Channels zur Kommunikation mit RDS Thread
+    //-> Aufträge zum RDS Thread
+    let (tx_to_rds, rx_in_rds): (Sender<MfxRdsJob>, Receiver<MfxRdsJob>) = mpsc::channel();
+    //<- Antworten vom RDS Thread
+    let (tx_from_rds, rx_from_rds): (Sender<MfxRdsJobAns>, Receiver<MfxRdsJobAns>) =
+      mpsc::channel();
+    //<- MFX Tel. Sendeaufträge vom RDS Thread
+    let (tx_tel_from_rds, rx_tel_from_rds): (Sender<MfxCvTel>, Receiver<MfxCvTel>) =
+      mpsc::channel();
+    //RDS Einlesethread starten
+    thread::Builder::new()
+      .name("RDS Feedbackthread".to_string())
+      .spawn(move || MfxRdsFeedbackThread::new(rx_in_rds, tx_from_rds, tx_tel_from_rds).execute())
+      .unwrap();
+
     MfxProtokoll {
       _version: version,
       uid_zentrale,
       reg_counter,
       path_reg_counter_file,
-      old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MFX_GL_ADRESSE + 1],
-      old_funktionen: [0; MAX_MFX_GL_ADRESSE + 1],
-      uid: [0; MAX_MFX_GL_ADRESSE + 1],
-      funk_anz: [0; MAX_MFX_GL_ADRESSE + 1],
-      new_sid: [false; MAX_MFX_GL_ADRESSE + 1],
+      old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MFX_GL_ADRESSE as usize + 1],
+      old_funktionen: [0; MAX_MFX_GL_ADRESSE as usize + 1],
+      uid: [0; MAX_MFX_GL_ADRESSE as usize + 1],
+      funk_anz: [0; MAX_MFX_GL_ADRESSE as usize + 1],
+      new_sid: [false; MAX_MFX_GL_ADRESSE as usize + 1],
       anz_eins: 0,
       zeitpunkt_uid: Instant::now(),
       search_new_dekoder_bits: 0,
       search_new_dekoder_uid: 0,
       rds_1_bit_start_pos: 0,
+      tx_to_rds,
+      rx_from_rds,
+      rx_tel_from_rds,
+      read_gl_parameter: None,
     }
   }
 
@@ -228,7 +269,7 @@ impl MfxProtokoll {
   fn add_bit(&mut self, bit: bool, ddl_tel: &mut DdlTel) {
     let last = ddl_tel.daten.len() - 1;
     let daten: &mut Vec<u8> = ddl_tel.daten[last].as_mut();
-    let values: (u8, u8) = if *daten.last().unwrap() == 0 {
+    let values: (u8, u8) = if (*daten.last().unwrap() & 0x01) == 0 {
       (0x00, 0xFF) //Letzter Pegel war 0 -> "normal"
     } else {
       (0xFF, 0x00) //Letzter Pegel war 1 -> invertiert arbeiten
@@ -270,7 +311,7 @@ impl MfxProtokoll {
   fn add_sync(&mut self, ddl_tel: &mut DdlTel, halb: bool) {
     let last = ddl_tel.daten.len() - 1;
     let daten: &mut Vec<u8> = ddl_tel.daten[last].as_mut();
-    let values: (u8, u8) = if *daten.last().unwrap() == 0 {
+    let values: (u8, u8) = if (*daten.last().unwrap() & 1) == 0 {
       (0x00, 0xFF) //Letzter Pegel war 0 -> "normal"
     } else {
       (0xFF, 0x00) //Letzter Pegel war 1 -> invertiert arbeiten
@@ -354,7 +395,7 @@ impl MfxProtokoll {
   /// # Arguments
   /// * ddl_tel - Telegramm, bei dem die SID Zuordnung hinzugefügt werden soll
   /// * adr - Die Adresse
-  fn send_sid(&mut self, ddl_tel: &mut DdlTel, adr: usize) {
+  fn send_sid(&mut self, ddl_tel: &mut DdlTel, adr: u32) {
     //Format des Bitstreams:
     //10AAAAAAA111011AAAAAAAAAAAAAAUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUCCCCCCCC
     //1.A=0 (Broadcast)
@@ -365,7 +406,7 @@ impl MfxProtokoll {
     let mut crc = self.add_adr(0, ddl_tel);
     self.add_bits(MFX_CMD_KONFIG_SID, ddl_tel, &mut crc);
     self.add_bits((adr as u32, 14), ddl_tel, &mut crc);
-    self.add_bits((self.uid[adr], 32), ddl_tel, &mut crc);
+    self.add_bits((self.uid[adr as usize], 32), ddl_tel, &mut crc);
     self.add_crc_ende_sync(ddl_tel, crc);
   }
   /// MFX Paket mit UID der Zentrale und Neuanmeldezähler versenden.
@@ -445,7 +486,7 @@ impl MfxProtokoll {
   /// Auswertung Ergebnis Dekodersuche.
   /// Wenn positives Feedback: weiter mit nächstem Bit, zuerst 0, dann 1.
   /// Wenn 32 Bit gefunden -> neuer Dekoder gefunden.
-  /// Liefert None zurück wenn nichts gefunden wurde, Some(UID) wenn ein neuer Dekoder erkannt wurde
+  /// Liefert None zurück wenn nichts gefunden wurde, Some<UID> wenn ein neuer Dekoder erkannt wurde.
   /// # Arguments
   /// * daten_rx: parallel zum Senden eingelesene Daten, Bit = 1 = RDS Feedback war vorhanden
   fn eval_send_search_new_decoder(&mut self, daten_rx: &Vec<u8>) -> Option<u32> {
@@ -489,7 +530,7 @@ impl MfxProtokoll {
         );
       }
     } else {
-      //Wenn die Suche einen Dekoder gefunden hat und das aktuelle Bit 0 war, dann kann nun n och mit 1 probiert werden
+      //Wenn die Suche einen Dekoder gefunden hat und das aktuelle Bit 0 war, dann kann nun noch mit 1 probiert werden
       if self.search_new_dekoder_bits > 0 {
         let bit = 0x80000000 >> (self.search_new_dekoder_bits - 1);
         if (self.search_new_dekoder_uid & bit) == 0 {
@@ -507,6 +548,119 @@ impl MfxProtokoll {
     }
     result
   }
+
+  /// Liefert ein MFX CV Read/Write Telegramm.
+  /// # Arguments
+  /// * tel - Zu erzeugendes Telegramm
+  fn get_cv_tel(&mut self, tel: &MfxCvTel) -> DdlTel {
+    //Format des Bitstreams:
+    //Read:  10AAAAAAA111000VVVVVVVVVVIIIIIIBBCCCCCCCC
+    //Write: 10AAAAAAA111001VVVVVVVVVVIIIIIIBBDDDDDDDDCCCCCCCC
+    //A=Adresse
+    //V=10 Bit CV Adresse
+    //I=6 Bit Index
+    //B=2 Bit Anzahl Bytes 00=1, 01=2, 10=4, 11=8 (Beim Schreiben unterstützen Dekoder aber nur ein Byte, hier ist jedoch alles implementiert)
+    //D=8(bis 64) Bit Daten zum Schreiben
+    //C=Checksumme
+    let mut ddl_tel = self.get_gl_new_tel(tel.adr, false); //Refresh->nur einmaliges Senden
+    let mut crc = self.add_adr(tel.adr, &mut ddl_tel);
+    self.add_bits(
+      match tel.mfx_cv_type {
+        MfxCvTelType::Read => MFX_CMD_CV_READ,
+        MfxCvTelType::Write(_) => MFX_CMD_CV_WRITE,
+      },
+      &mut ddl_tel,
+      &mut crc,
+    );
+    self.add_bits((tel.cv as u32, 10), &mut ddl_tel, &mut crc);
+    self.add_bits((tel.index as u32, 6), &mut ddl_tel, &mut crc);
+    self.add_bits((tel.byte_count.mfx_code(), 2), &mut ddl_tel, &mut crc);
+    let byte_count = tel.byte_count.byte_count();
+    if let MfxCvTelType::Write(value) = &tel.mfx_cv_type {
+      for i in 0..byte_count {
+        self.add_bits((value[i] as u32, 8), &mut ddl_tel, &mut crc);
+      }
+    }
+    self.add_crc(&mut ddl_tel, crc);
+    if tel.mfx_cv_type == MfxCvTelType::Read {
+      //Nun kommt noch der Platz für RDS Rückmeldung
+      //11 oder 11.5 Sync
+      //Bitfolge "0011"
+      //23 Takte 25us alle 912us
+      //(3+AnzBits+8+4)*2 Takte 25us alle 456us (3 Bit Startkennung, Daten, 8 Bit Checksumme, 4 zusätzlich am Ende)
+      //2 Sync
+      for _ in [0..11] {
+        self.add_sync(&mut ddl_tel, false);
+      }
+      //Pause geht mit 0 weiter, sollte also hier mit 1 aufhören um letzte Flanke zu haben
+      //Wenn nicht: 0.5 Sync ergänzen
+      if *ddl_tel.daten.last().unwrap().last().unwrap() == 0 {
+        self.add_sync(&mut ddl_tel, true);
+      }
+      //Bitfolge 0011
+      self.add_bits((0b0011, 4), &mut ddl_tel, &mut crc);
+      //23 Takte 25us alle 912us
+      //Ab hier wird mit einzelnen Bits gearbeitet um das verlangte Timing möglichts genau einzuhalten
+      //MSB wird zuerst ausgegeben
+      let daten = ddl_tel.daten.last_mut().unwrap();
+      //Anzahl Bits die im letzten Bytes noch frei sind
+      let mut anz_bit_frei: usize = 0;
+      for _ in [0..23] {
+        //Pause mit Ruhepegel
+        self.add_single_bits(
+          daten,
+          &mut anz_bit_frei,
+          BITS_PER_RDSSYNC_PAUSE_PERIOD,
+          false,
+        );
+        //Pause ist da, nun der Impuls
+        self.add_single_bits(daten, &mut anz_bit_frei, BITS_PER_RDSSYNC_IMP, true);
+      }
+      //(3+AnzBits+8+4)*2 Takte 25us alle 456us
+      for _ in [0..(3 + byte_count + 8 + 4) * 2] {
+        //Pause mit Ruhepegel
+        self.add_single_bits(daten, &mut anz_bit_frei, BITS_PER_RDSSYNC_PAUSE_HALF, false);
+        //Pause ist da, nun der Impuls
+        self.add_single_bits(daten, &mut anz_bit_frei, BITS_PER_RDSSYNC_IMP, true);
+      }
+      //Und noch eine letzte Pause
+      //Pause mit Ruhepegel
+      self.add_single_bits(daten, &mut anz_bit_frei, BITS_PER_RDSSYNC_PAUSE_HALF, false);
+    }
+    //2 Sync
+    self.add_sync(&mut ddl_tel, false);
+    self.add_sync(&mut ddl_tel, false);
+    ddl_tel
+  }
+
+  /// Einzelne Bits zu einem Vector hinzufügen
+  /// # Arguments
+  /// * daten - Vector, bei dem Bits hinzugefügt werden sollen.
+  /// * anzBitFrei - Wieviel Bits sind im letzten Byte noch frei als Inputs und dann als Output
+  ///                Start Daten beim MSB, das heisst freie Bits beim LSB.
+  /// * anzBits - Anzahl der Bits, die hinzugefügt werden sollen.
+  /// * bitValue - true: 1, false: 0 hinzufügen
+  fn add_single_bits(
+    &self, daten: &mut Vec<u8>, anz_bit_frei: &mut usize, anz_bits: usize, bit_value: bool,
+  ) {
+    for _ in 0..anz_bits {
+      //Wenn im letzten Byte noch etwas frei ist -> verwenden
+      if *anz_bit_frei > 0 {
+        //Ein Bit Weniger Frei
+        *anz_bit_frei -= 1;
+      } else {
+        //Jetzt braucht es ein neues Byte
+        daten.push(0);
+        //Noch 7 Bits frei
+        *anz_bit_frei = 7;
+      }
+      //Nun noch verlangten Wert auf 1 setzen wenn 1 verlangt. Bei 0 nicht machen, Byte wurde als 0 hinzugefügt
+      if bit_value {
+        let letztes_byte = daten.last_mut().unwrap();
+        *letztes_byte |= 1 << *anz_bit_frei;
+      }
+    }
+  }
 }
 
 impl DdlProtokoll for MfxProtokoll {
@@ -518,18 +672,18 @@ impl DdlProtokoll for MfxProtokoll {
   /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
   /// # Arguments
   /// * adr - Adresse der Lok
-  /// * uid - UID des Dekoders
+  /// * uid - UID des Dekoders, muss hier immer vorhanden sein!
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
-  fn init_gl(&mut self, adr: usize, uid: u32, funk_anz: usize) {
-    self.uid[adr] = uid;
-    self.funk_anz[adr] = funk_anz;
+  fn init_gl(&mut self, adr: u32, uid: Option<u32>, funk_anz: usize) {
+    self.uid[adr as usize] = uid.unwrap();
+    self.funk_anz[adr as usize] = funk_anz;
     //Merken, dass vor nächstem Lokbefehl noch neue Schienenadr. Zuordnung gesendet werden muss.
     //Wird nicht hier direkt gemacht, da Init auch bei Booster Stop ausgeführt wird.
-    self.new_sid[adr] = true;
+    self.new_sid[adr as usize] = true;
   }
   /// Liefert die max. erlaubte Lokadresse
-  fn get_gl_max_adr(&self) -> usize {
+  fn get_gl_max_adr(&self) -> u32 {
     MAX_MFX_GL_ADRESSE
   }
   /// Wieviele Speedsteps werden vom Protokoll unterstützt
@@ -540,7 +694,7 @@ impl DdlProtokoll for MfxProtokoll {
 
   /// Liefert die max. erlaubte Schaltmoduladdresse
   /// MFX unterstützt keine GA, deshalb 0.
-  fn get_ga_max_adr(&self) -> usize {
+  fn get_ga_max_adr(&self) -> u32 {
     0
   }
 
@@ -555,20 +709,28 @@ impl DdlProtokoll for MfxProtokoll {
     16 //Alle, die direkt geschaltet werden können
   }
 
-  /// Liefert ein leeres GL Telegramm zur Verwendung in "get_gl_basis_tel" und / oder "get_gl_zusatz_tel".
+  /// Liefert ein neues GL Telegramm zur Verwendung in "get_gl_basis_tel" und / oder "get_gl_zusatz_tel".
+  /// Falls für GL "adr" noch ein neues SID Zuordnungstelegramm gesendet werden muss, ist dieses bereits
+  /// enthalten, ansonsten ist noch nichts enthalten.
   /// # Arguments
-  /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
+  /// * adr - Adresse der Lok zur Erkennung, ob noch SID Zuordung gesendet werden muss
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
-  fn get_gl_new_tel(&self, adr: usize, refresh: bool) -> DdlTel {
-    DdlTel::new(
+  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel {
+    let mut ddl_tel = DdlTel::new(
       adr,
       SPI_BAUDRATE_MFX_2,
       Duration::ZERO,
       false,
       MFX_MAX_LEN,
       if refresh { 1 } else { 2 }, //Neue Telegramme 2-fach senden
-    )
+    );
+    if self.new_sid[adr as usize] {
+      self.send_sid(&mut ddl_tel, adr);
+      ddl_tel.daten.push(Vec::with_capacity(MFX_MAX_LEN));
+      self.new_sid[adr as usize] = false;
+    }
+    ddl_tel
   }
 
   /// Erzeugt das Basis Telegramm für GL.
@@ -583,14 +745,9 @@ impl DdlProtokoll for MfxProtokoll {
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis "get_Anz_F_Basis"
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_gl_basis_tel(
-    &mut self, adr: usize, drive_mode: GLDriveMode, speed: usize, _speed_steps: usize,
+    &mut self, adr: u32, drive_mode: GLDriveMode, speed: usize, _speed_steps: usize,
     funktionen: u64, ddl_tel: &mut DdlTel,
   ) {
-    if self.new_sid[adr] {
-      self.send_sid(ddl_tel, adr);
-      ddl_tel.daten.push(Vec::with_capacity(MFX_MAX_LEN));
-      self.new_sid[adr] = false;
-    }
     self.add_start_sync(ddl_tel);
     //Speed 1 = Nothalt
     let speed_used = if drive_mode == GLDriveMode::Nothalt {
@@ -604,11 +761,11 @@ impl DdlProtokoll for MfxProtokoll {
     };
     //Drivemode für Richtung, wenn Nothalt dann der letzte
     let drive_mode_used: GLDriveMode = if drive_mode == GLDriveMode::Nothalt {
-      self.old_drive_mode[adr]
+      self.old_drive_mode[adr as usize]
     } else {
       drive_mode
     };
-    self.old_drive_mode[adr] = drive_mode_used;
+    self.old_drive_mode[adr as usize] = drive_mode_used;
     //Format des Bitstreams für 127 Fahrstufen ist:
     //<=4 Fn       : ..A001RSSSSSSS010FFFFCCCCCCCC
     //>4 .. <=8 Fn : ..A001RSSSSSSS0110FFFFFFFFCCCCCCCC
@@ -653,10 +810,10 @@ impl DdlProtokoll for MfxProtokoll {
       );
       self.add_bits((speed_used as u32, 7), ddl_tel, &mut crc);
     }
-    if self.funk_anz[adr] <= 4 {
+    if self.funk_anz[adr as usize] <= 4 {
       self.add_bits(MFX_CMD_FNKT_F0_F3, ddl_tel, &mut crc);
       self.add_bits((funktionen as u32, 4), ddl_tel, &mut crc);
-    } else if self.funk_anz[adr] <= 8 {
+    } else if self.funk_anz[adr as usize] <= 8 {
       self.add_bits(MFX_CMD_FNKT_F0_F7, ddl_tel, &mut crc);
       self.add_bits((funktionen as u32, 8), ddl_tel, &mut crc);
     } else {
@@ -665,8 +822,8 @@ impl DdlProtokoll for MfxProtokoll {
     }
     self.add_crc_ende_sync(ddl_tel, crc);
     //F0 bis 15 übernehmen
-    self.old_funktionen[adr] &= !0xFFFF;
-    self.old_funktionen[adr] |= funktionen & 0xFFFF;
+    self.old_funktionen[adr as usize] &= !0xFFFF;
+    self.old_funktionen[adr as usize] |= funktionen & 0xFFFF;
   }
 
   /// Erzeugt das / die Fx Zusatztelegramm(e) für GL.
@@ -678,10 +835,8 @@ impl DdlProtokoll for MfxProtokoll {
   /// * refresh - Wenn false werden nur Telegramme für Funktionen, die geändert haben, erzeugt
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt ab "get_Anz_F_Basis"
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_gl_zusatz_tel(
-    &mut self, adr: usize, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel,
-  ) {
-    if self.funk_anz[adr] <= self.get_gl_anz_f_basis() {
+  fn get_gl_zusatz_tel(&mut self, adr: u32, refresh: bool, funktionen: u64, ddl_tel: &mut DdlTel) {
+    if self.funk_anz[adr as usize] <= self.get_gl_anz_f_basis() {
       //Hier gibt es nichts zu tun
       return;
     }
@@ -691,8 +846,8 @@ impl DdlProtokoll for MfxProtokoll {
     //N=F0..127
     //F=Funktion Ein/Aus 0/1
     //C=Checksumme
-    for i in self.get_gl_anz_f_basis()..self.funk_anz[adr] {
-      if refresh || (((self.old_funktionen[adr] ^ funktionen) & (1 << i)) != 0) {
+    for i in self.get_gl_anz_f_basis()..self.funk_anz[adr as usize] {
+      if refresh || (((self.old_funktionen[adr as usize] ^ funktionen) & (1 << i)) != 0) {
         //Refresh mit zwingend alle senden oder Veränderung
         self.add_start_sync(ddl_tel);
         let mut crc = self.add_adr(adr as u32, ddl_tel);
@@ -724,7 +879,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// Nicht verwendet, keine GA's in MFX
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
-  fn get_ga_new_tel(&self, adr: usize) -> DdlTel {
+  fn get_ga_new_tel(&self, adr: u32) -> DdlTel {
     assert!(false, "MFX unterstützt keine GA, Aufruf get_ga_new_tel");
     DdlTel::new(adr, SPI_BAUDRATE_MFX_2, Duration::ZERO, false, 0, 1)
   }
@@ -736,7 +891,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// * value - Gewünschter Zustand des Port Ein/Aus
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   /// Nicht verwendet, keine GA's in MFX
-  fn get_ga_tel(&self, _adr: usize, _port: usize, _value: bool, _ddl_tel: &mut DdlTel) {
+  fn get_ga_tel(&self, _adr: u32, _port: usize, _value: bool, _ddl_tel: &mut DdlTel) {
     assert!(false, "MFX unterstützt keine GA, Aufruf get_ga_tel");
   }
 
@@ -746,7 +901,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// Sobald eine GL vorhanden ist, wird keine Idle mehr gesendet, UID Zentrale wird dann periodisch
   /// über get_protokoll_telegrammme im Intervall INTERVALL_UID gesendet
   fn get_idle_tel(&mut self) -> Option<DdlTel> {
-    let mut ddl_tel = self.get_gl_new_tel(0, true); //Refresh->nur einnaliges Senden
+    let mut ddl_tel = self.get_gl_new_tel(0, true); //Refresh->nur einmaliges Senden
     self.send_uid_regcounter(&mut ddl_tel);
     Some(ddl_tel)
   }
@@ -754,28 +909,98 @@ impl DdlProtokoll for MfxProtokoll {
   /// Liefert None, wenn es nichts zur versenden gibt
   /// Hier für MFX wird periodisch die UID / Neuanmeldezähler der Zentrale und Suche
   /// nach noch nicht angemeldeten Dekodern versandt.
-  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
-    let now = Instant::now();
-    if now >= (self.zeitpunkt_uid + INTERVALL_UID) {
-      self.zeitpunkt_uid = now;
-      //UID Zentrale und Neuanmeldezähler
-      let mut tel = self.get_idle_tel().unwrap();
-      //Suche neue Dekoder, nächstes Telegramm
-      tel.daten.push(Vec::with_capacity(MFX_MAX_LEN_SEARCH_NEW));
-      self.send_search_new_decoder(&mut tel);
-      Some(tel)
+  /// Zudem werden die CV Read/Write Telegramme erzeugt, wenn vom MFX RDS Thread verlangt.
+  /// Vorrang hat CV Read/Write. Wenn das verlangt wird, dann wird nie Zentrale UID und Dekodersuche erzeugt.
+  /// Das kann ein Zyklus später erfolgen falls gleichzeitig notwendig.
+  /// # Arguments
+  /// * sm_aktiv - True wenn irgend ein SM aktiv ist. Da nur eine GL in SM sein darf, keine Suche nach neuen Loks.
+  fn get_protokoll_telegrammme(&mut self, sm_aktiv: bool) -> Option<DdlTel> {
+    let mut result = None;
+    let tel_from_rds = self.rx_tel_from_rds.try_recv();
+    if let Ok(tel) = tel_from_rds {
+      result = Some(self.get_cv_tel(&tel));
     } else {
-      None
+      let now = Instant::now();
+      if now >= (self.zeitpunkt_uid + INTERVALL_UID) {
+        self.zeitpunkt_uid = now;
+        //UID Zentrale und Neuanmeldezähler
+        let mut tel = self.get_idle_tel().unwrap();
+        if !sm_aktiv {
+          //Suche neue Dekoder, nächstes Telegramm
+          tel.daten.push(Vec::with_capacity(MFX_MAX_LEN_SEARCH_NEW));
+          self.send_search_new_decoder(&mut tel);
+        }
+        result = Some(tel);
+      }
     }
+    result
   }
 
   /// Auswertung automatische Dekoderanmeldung (z.B. bei MFX).
   /// Notwendige Telegramme zur Suche müssen über "get_protokoll_telegrammme" ausgegeben und eine Rückmeldung
   /// verlangt werden.
-  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dess UID zurückgegeben, ansonsten None.
+  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dessen UID zurückgegeben, ansonsten None.
   /// # Arguments
   /// * daten_rx : Die beim parallel zum Senden über SPI eingelesenen Daten
   fn eval_neu_anmeldung(&mut self, daten_rx: &Vec<u8>) -> Option<u32> {
     self.eval_send_search_new_decoder(daten_rx)
+  }
+
+  /// Auslesen optionale GL Parameter (z.B. MFX Lokname und Funktionen)
+  /// Liefert ResultReadGlParameter::Error zurück, wenn ein Fehler aufgetreten ist oder vom Protokoll nicht untertsützt.
+  /// Liefert ResultReadGlParameter::Busy zurück, wenn das Auslesen im Gange ist
+  /// Liefert ResultReadGlParameter::Ok mit den Parametern zurück, wenn abgeschlossen.
+  /// Falls "eval_neu_anmeldung" "Some" liefert, sollte hier nicht Error zurückgegeben werden.
+  /// Falls vom Protokoll nicht unterstützt, dann Ok mit leerer Liste.
+  /// # Arguments
+  /// * adr : Schienenadresse der GL
+  fn read_gl_parameter(&mut self, adr: u32) -> ResultReadGlParameter {
+    let mut result = ResultReadGlParameter::Busy;
+    if let Some(adr_read_gl_parameter) = self.read_gl_parameter {
+      if adr_read_gl_parameter == adr {
+        //Ist ein Ergebnis vorhanden?
+        if let Ok(rx_rds) = self.rx_from_rds.try_recv() {
+          //Antwort vorhanden
+          match rx_rds {
+            MfxRdsJobAns::Error => {
+              //Fehler, Abbruch
+              result = ResultReadGlParameter::Error;
+              self.read_gl_parameter = None;
+            }
+            MfxRdsJobAns::WriteOK => {
+              //Hier werden nur die gesamten Lokparameter für Init ausgelesen, keine CA's geschrieben.
+              //Diese Antwort darf hier nie kommen
+              //Fehler, Abbruch
+              result = ResultReadGlParameter::Error;
+              self.read_gl_parameter = None;
+            }
+            MfxRdsJobAns::ReadValue(_) => {
+              //Hier werden nur die gesamten Lokparameter für Init ausgelesen, keine einzelnen CA's
+              //Einzelne CA's wird nur über SM verwendet, diese Antwort darf hier nie kommen
+              //Fehler, Abbruch
+              result = ResultReadGlParameter::Error;
+              self.read_gl_parameter = None;
+            }
+            MfxRdsJobAns::InitParamater(init_parameter) => {
+              //Auslesen hat funktioniert
+              result = ResultReadGlParameter::Ok(init_parameter);
+              //Fertig
+              self.read_gl_parameter = None;
+            }
+          }
+        }
+      } else {
+        //Auslesen im Gange, es kann nicht gleichzeitig eine andere Adresse ausgelesen werden
+        result = ResultReadGlParameter::Error;
+      }
+    } else {
+      //Auslesen Lokparameter starten
+      self.read_gl_parameter = Some(adr);
+      self
+        .tx_to_rds
+        .send(MfxRdsJob::new_read_all_init_parameter(adr))
+        .unwrap();
+    }
+    result
   }
 }
