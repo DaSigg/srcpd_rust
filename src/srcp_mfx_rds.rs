@@ -224,6 +224,8 @@ pub struct MfxRdsJob {
   mfx_rds_job_type: MfxRdsJobType,
   /// Adresse der Lok
   adr: u32,
+  /// Session ID wenn SM Kommando von srcp Session kommt an dei die Antwort zurück soll
+  session_id: Option<u32>,
 }
 impl MfxRdsJob {
   /// Liefert MfxRdsJob ReadAllInitParameter
@@ -233,16 +235,74 @@ impl MfxRdsJob {
     MfxRdsJob {
       mfx_rds_job_type: MfxRdsJobType::ReadAllInitParameter,
       adr,
+      session_id: None, //Wird nur nach automatischer Neuanmeldung einer Lok aufgerufen, Info immer an Info-Sessions
+    }
+  }
+  /// Liefert MfxRdsJob WriteCA
+  /// # Arguments
+  /// * adr - Lokadresse.
+  /// * block - MFX Konfig Block
+  /// * ca - MFX Konfig CA
+  /// * ca_index - MFX Konfig CA Index
+  /// * index - Index Konfig Value
+  /// * value - Zu schreibender Wert
+  /// * session_id - srcp Session ID von der das Kommando kommt um Antwort an diese Session zu geben
+  pub fn new_write_ca(
+    adr: u32, block: u8, ca: u8, ca_index: u8, index: u8, value: u8, session_id: u32,
+  ) -> MfxRdsJob {
+    MfxRdsJob {
+      mfx_rds_job_type: MfxRdsJobType::WriteCA {
+        ca_parameter: CaParameter {
+          block,
+          ca,
+          ca_index,
+          index,
+        },
+        value: value,
+      },
+      adr,
+      session_id: Some(session_id),
+    }
+  }
+  /// Liefert MfxRdsJob WriteCA
+  /// # Arguments
+  /// * adr - Lokadresse.
+  /// * block - MFX Konfig Block
+  /// * ca - MFX Konfig CA
+  /// * ca_index - MFX Konfig CA Index
+  /// * index - Index Konfig Value
+  /// * session_id - srcp Session ID von der das Kommando kommt um Antwort an diese Session zu geben
+  pub fn new_read_ca(
+    adr: u32, block: u8, ca: u8, ca_index: u8, index: u8, session_id: u32,
+  ) -> MfxRdsJob {
+    MfxRdsJob {
+      mfx_rds_job_type: MfxRdsJobType::ReadCA {
+        ca_parameter: CaParameter {
+          block,
+          ca,
+          ca_index,
+          index,
+        },
+      },
+      adr,
+      session_id: Some(session_id),
     }
   }
 }
 
-/// Antworten auf MfxRdsJob
-pub enum MfxRdsJobAns {
+/// Antworttypen auf MfxRdsJob
+pub enum MfxRdsJobAnsType {
   Error,
   WriteOK,                    //Write wurde erfolgreich ausgegeben
   ReadValue(u8),              //CA Read
   InitParamater(Vec<String>), //ReadAllInitParameter
+}
+/// Antwort auf MfxRdsJob
+pub struct MfxRdsJobAns {
+  /// Die Antwort
+  pub mfx_rds_job_ans_typ: MfxRdsJobAnsType,
+  /// Session ID aus MfxRdsJob
+  pub session_id: Option<u32>,
 }
 
 /// Anzahl Bytes für MfxCvTel Read/Write
@@ -878,13 +938,25 @@ impl MfxRdsFeedbackThread {
             for i in 0..fx.len() {
               para.push(fx[i].to_string());
             }
-            self.tx.send(MfxRdsJobAns::InitParamater(para)).unwrap();
+            self
+              .tx
+              .send(MfxRdsJobAns {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsType::InitParamater(para),
+                session_id: auftrag.session_id,
+              })
+              .unwrap();
           } else {
             warn!(
               "MFX Lokname und Funktionen konnten nicht gelesen werden. SID={}",
               auftrag.adr
             );
-            self.tx.send(MfxRdsJobAns::Error).unwrap();
+            self
+              .tx
+              .send(MfxRdsJobAns {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
+                session_id: auftrag.session_id,
+              })
+              .unwrap();
           }
         }
         MfxRdsJobType::ReadCA { ca_parameter } => {
@@ -898,20 +970,38 @@ impl MfxRdsFeedbackThread {
               self.read_cv(auftrag.adr, cv, ca_parameter.index, MfxCvTelBytes::Cc1byte)
             {
               //Alles OK, Antwort zurück senden
-              self.tx.send(MfxRdsJobAns::ReadValue(val[0])).unwrap();
+              self
+                .tx
+                .send(MfxRdsJobAns {
+                  mfx_rds_job_ans_typ: MfxRdsJobAnsType::ReadValue(val[0]),
+                  session_id: auftrag.session_id,
+                })
+                .unwrap();
             } else {
               warn!(
                 "MFX Error ReadCA read_cv {}.{} für SID={}",
                 cv, ca_parameter.index, auftrag.adr
               );
-              self.tx.send(MfxRdsJobAns::Error).unwrap();
+              self
+                .tx
+                .send(MfxRdsJobAns {
+                  mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
+                  session_id: auftrag.session_id,
+                })
+                .unwrap();
             }
           } else {
             warn!(
               "MFX Error ReadCA findCA {:?} für SID={}",
               ca_parameter, auftrag.adr
             );
-            self.tx.send(MfxRdsJobAns::Error).unwrap();
+            self
+              .tx
+              .send(MfxRdsJobAns {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
+                session_id: auftrag.session_id,
+              })
+              .unwrap();
           }
         }
         MfxRdsJobType::WriteCA {
@@ -926,13 +1016,25 @@ impl MfxRdsFeedbackThread {
           ) {
             self.write_cv(auftrag.adr, cv, ca_parameter.index, &vec![value]);
             //Alles OK, Antwort zurück senden
-            self.tx.send(MfxRdsJobAns::WriteOK).unwrap();
+            self
+              .tx
+              .send(MfxRdsJobAns {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsType::WriteOK,
+                session_id: auftrag.session_id,
+              })
+              .unwrap();
           } else {
             warn!(
               "MFX Error WriteCA findCA {:?} für SID={}",
               ca_parameter, auftrag.adr
             );
-            self.tx.send(MfxRdsJobAns::Error).unwrap();
+            self
+              .tx
+              .send(MfxRdsJobAns {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
+                session_id: auftrag.session_id,
+              })
+              .unwrap();
           }
         }
       }

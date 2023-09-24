@@ -86,12 +86,8 @@ pub struct DdlGL<'a> {
   ///Buffer für verzögertes senden
   tel_buffer: Vec<DdlTel>,
   ///GL's, die automatisch angemeldet wurden und bei der noch die optionalen Parameter ausgelesen werden
-  ///Es wird nur immer eine Lok gleichzeitig angemeldet, wenn eine Lok in SM ist "gl_sm", finden keine Anmeldungen statt.
-  ///-> Dies gilt global, über alle Protokolle
+  ///Es wird nur immer eine Lok gleichzeitig angemeldet, wenn eine Lok in SM ist, finden keine Anmeldungen statt.
   gl_param_read: Option<u32>,
-  ///Lok in SM, es ist nur immer eine Lok in SM, wenn eine Lok in SM ist, keine Neuanmeldung "gl_param_read"
-  ///-> Dies gilt global, über alle Protokolle
-  gl_sm: Option<usize>,
 }
 
 impl DdlGL<'_> {
@@ -120,7 +116,6 @@ impl DdlGL<'_> {
       all_idle_protokolle,
       tel_buffer: Vec::new(),
       gl_param_read: None,
-      gl_sm: None,
     }
   }
 
@@ -729,10 +724,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
         for (_version, prot_impl) in prot_versionen {
           let mut p = prot_impl.borrow_mut();
           //SM (keine Loksuche) wenn eine GL in SM ist oder bereits eine auto Anmeldung läuft
-          if let Some(tel) = p
-            .get_protokoll_telegrammme(self.gl_param_read.is_some() || self.gl_sm.is_some())
-            .as_mut()
-          {
+          if let Some(tel) = p.get_protokoll_telegrammme().as_mut() {
             self.send_tel(tel);
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
             if let Some(daten_rx) = &tel.daten_rx {
@@ -770,6 +762,10 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                 }
               }
             }
+          }
+          if self.gl_param_read.is_none() {
+            //Wenn keine Lokanmeldung aktiv ist, dann könnte ein SM Meldung bereit liegen
+            todo!()
           }
         }
       }

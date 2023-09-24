@@ -166,7 +166,7 @@ impl DdlGA<'_> {
     protokoll
       .borrow_mut()
       .get_ga_tel(adr, port, value, &mut ddl_tel);
-    //Es ist nur ein Telegramm, keine Behandlung verzögertes senden notwendig
+    //Es ist nur ein Telegramm, keine Behandlung verzögertes Senden notwendig
     <DdlGA<'_> as SRCPDeviceDDL>::send(self.spidev, &mut ddl_tel);
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr, port, value);
@@ -181,7 +181,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
   /// * cmd_msg - Empfangenes Kommando
   fn validate_cmd(&self, cmd_msg: &SRCPMessage) -> bool {
     let mut result = false;
-    //Für GA wird unterstützt: INIT, SET, GET
+    //Für GA wird unterstützt: INIT, TERM, SET, GET
     if let SRCPMessageID::Command { msg_type } = cmd_msg.message_id {
       match msg_type {
         SRCPMessageType::INIT => {

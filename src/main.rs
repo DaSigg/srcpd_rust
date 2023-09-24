@@ -27,6 +27,7 @@ mod srcp_devices_ddl;
 mod srcp_devices_ddl_ga;
 mod srcp_devices_ddl_gl;
 mod srcp_devices_ddl_power;
+mod srcp_devices_ddl_sm;
 mod srcp_mfx_rds;
 mod srcp_protocol_ddl;
 mod srcp_protocol_ddl_dcc;

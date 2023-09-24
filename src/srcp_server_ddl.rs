@@ -13,6 +13,7 @@ use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 use crate::{
   srcp_devices_ddl::{self},
   srcp_devices_ddl_gl::DdlGL,
+  srcp_devices_ddl_sm::DdlSM,
   srcp_protocol_ddl::{HashMapProtokollVersion, HashMapVersion},
   srcp_protocol_ddl_dcc::{DccProtokoll, DccVersion},
   srcp_protocol_ddl_mfx::{MfxProtokoll, MfxVersion},
@@ -193,6 +194,15 @@ impl DDL {
         self.busnr,
         tx.clone(),
         &self.spidev,
+        all_protokolle.clone(),
+      ))),
+    );
+    //SM Device
+    all_devices.insert(
+      SRCPMessageDevice::SM,
+      Rc::new(RefCell::new(DdlSM::new(
+        self.busnr,
+        tx.clone(),
         all_protokolle.clone(),
       ))),
     );

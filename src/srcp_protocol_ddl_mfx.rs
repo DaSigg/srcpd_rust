@@ -1,4 +1,5 @@
 use std::{
+  collections::HashMap,
   fs,
   sync::mpsc::{self, Receiver, Sender},
   thread,
@@ -8,7 +9,9 @@ use std::{
 use log::{info, warn};
 
 use crate::{
-  srcp_mfx_rds::{MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob, MfxRdsJobAns},
+  srcp_mfx_rds::{
+    MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob, MfxRdsJobAns, MfxRdsJobAnsType,
+  },
   srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode, ResultReadGlParameter},
 };
 
@@ -178,6 +181,8 @@ pub struct MfxProtokoll {
   rx_tel_from_rds: Receiver<MfxCvTel>,
   /// Wenn das lesen von Lokparametern im Gange ist, ist hier die Adresse dieser Lok enthalten
   read_gl_parameter: Option<u32>,
+  /// Ist SM Mode auf diesem Protokoll aktiviert?
+  sm_aktiv: bool,
 }
 
 impl MfxProtokoll {
@@ -235,6 +240,7 @@ impl MfxProtokoll {
       rx_from_rds,
       rx_tel_from_rds,
       read_gl_parameter: None,
+      sm_aktiv: false,
     }
   }
 
@@ -912,9 +918,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// Zudem werden die CV Read/Write Telegramme erzeugt, wenn vom MFX RDS Thread verlangt.
   /// Vorrang hat CV Read/Write. Wenn das verlangt wird, dann wird nie Zentrale UID und Dekodersuche erzeugt.
   /// Das kann ein Zyklus später erfolgen falls gleichzeitig notwendig.
-  /// # Arguments
-  /// * sm_aktiv - True wenn irgend ein SM aktiv ist. Da nur eine GL in SM sein darf, keine Suche nach neuen Loks.
-  fn get_protokoll_telegrammme(&mut self, sm_aktiv: bool) -> Option<DdlTel> {
+  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
     let mut result = None;
     let tel_from_rds = self.rx_tel_from_rds.try_recv();
     if let Ok(tel) = tel_from_rds {
@@ -925,7 +929,8 @@ impl DdlProtokoll for MfxProtokoll {
         self.zeitpunkt_uid = now;
         //UID Zentrale und Neuanmeldezähler
         let mut tel = self.get_idle_tel().unwrap();
-        if !sm_aktiv {
+        //Keine Suche wenn SM aktiv ist oder bereits eine Lokanmeldung läuft
+        if !self.sm_aktiv && self.read_gl_parameter.is_none() {
           //Suche neue Dekoder, nächstes Telegramm
           tel.daten.push(Vec::with_capacity(MFX_MAX_LEN_SEARCH_NEW));
           self.send_search_new_decoder(&mut tel);
@@ -961,27 +966,27 @@ impl DdlProtokoll for MfxProtokoll {
         //Ist ein Ergebnis vorhanden?
         if let Ok(rx_rds) = self.rx_from_rds.try_recv() {
           //Antwort vorhanden
-          match rx_rds {
-            MfxRdsJobAns::Error => {
+          match rx_rds.mfx_rds_job_ans_typ {
+            MfxRdsJobAnsType::Error => {
               //Fehler, Abbruch
               result = ResultReadGlParameter::Error;
               self.read_gl_parameter = None;
             }
-            MfxRdsJobAns::WriteOK => {
+            MfxRdsJobAnsType::WriteOK => {
               //Hier werden nur die gesamten Lokparameter für Init ausgelesen, keine CA's geschrieben.
               //Diese Antwort darf hier nie kommen
               //Fehler, Abbruch
               result = ResultReadGlParameter::Error;
               self.read_gl_parameter = None;
             }
-            MfxRdsJobAns::ReadValue(_) => {
+            MfxRdsJobAnsType::ReadValue(_) => {
               //Hier werden nur die gesamten Lokparameter für Init ausgelesen, keine einzelnen CA's
               //Einzelne CA's wird nur über SM verwendet, diese Antwort darf hier nie kommen
               //Fehler, Abbruch
               result = ResultReadGlParameter::Error;
               self.read_gl_parameter = None;
             }
-            MfxRdsJobAns::InitParamater(init_parameter) => {
+            MfxRdsJobAnsType::InitParamater(init_parameter) => {
               //Auslesen hat funktioniert
               result = ResultReadGlParameter::Ok(init_parameter);
               //Fertig
@@ -1002,5 +1007,68 @@ impl DdlProtokoll for MfxProtokoll {
         .unwrap();
     }
     result
+  }
+
+  /// Dekoderkonfiguration (SM) Start
+  fn sm_init(&mut self) {
+    self.sm_aktiv = true;
+  }
+  /// Dekoderkonfiguration (SM) Ende
+  fn sm_term(&mut self) {
+    self.sm_aktiv = false;
+  }
+
+  /// Dekoderkonfiguration (SM) Write Value.
+  /// # Arguments
+  /// * adr - Schienenadresse der GL, 0 für Broadcast
+  /// * sm_type - Type des Zugriffes (aus srcp Protokoll), hier nicht verwendet, es gibt nur CAMFX
+  /// * para - Parameter für Write Zugriff (protokollabhängig)
+  /// * value - zu schreibender Wert
+  /// * session_id - Session ID von der das Kommando kam um eine Antwort an diese zu senden.
+  fn sm_write(
+    &mut self, adr: u32, _sm_type: &String, para: &Vec<u32>, value: u32, session_id: u32,
+  ) {
+    self
+      .tx_to_rds
+      .send(MfxRdsJob::new_write_ca(
+        adr,
+        para[0] as u8,
+        para[1] as u8,
+        para[2] as u8,
+        para[3] as u8,
+        value as u8,
+        session_id,
+      ))
+      .unwrap();
+  }
+  /// Dekoderkonfiguration (SM) Read Value.
+  /// # Arguments
+  /// * adr - Schienenadresse der GL, 0 für Broadcast
+  /// * sm_type - Type des Zugriffes (aus srcp Protokoll), hier nicht verwendet, es gibt nur CAMFX
+  /// * para - Parameter für Write Zugriff (protokollabhängig)
+  /// * session_id - Session ID von der das Kommando kam um eine Antwort an diese zu senden.
+  fn sm_read(&mut self, adr: u32, _sm_type: &String, para: &Vec<u32>, session_id: u32) {
+    self
+      .tx_to_rds
+      .send(MfxRdsJob::new_read_ca(
+        adr,
+        para[0] as u8,
+        para[1] as u8,
+        para[2] as u8,
+        para[3] as u8,
+        session_id,
+      ))
+      .unwrap();
+  }
+  /// Liefert alle in "sm_read" und "sm_write" unterstützten Typen mit der Anzahl erwarteter Parameter
+  /// ohne Value für SET.
+  /// Wenn diese Funktion Some zurück gibt, dann müssen sowohl "sm_read" als auch "sm_write" bei
+  /// entsprechendem Aufruf "Some" zurückgeben!
+  /// None wenn SM nicht unterstützt wird.
+  fn sm_get_all_types(&self) -> Option<HashMap<String, usize>> {
+    let mut result: HashMap<String, usize> = HashMap::new();
+    //4 Parameter bei Zugriff auf MFX Konfigvariabeln: Block, CA, CA_Index, Index
+    result.insert("CAMFX".to_string(), 4);
+    Some(result)
   }
 }

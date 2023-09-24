@@ -207,9 +207,7 @@ pub trait DdlProtokoll {
   fn get_idle_tel(&mut self) -> Option<DdlTel>;
   /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
-  /// # Arguments
-  /// * sm_aktiv - True wenn irgend ein SM aktiv ist. Da nur eine GL in SM sein darf, keine Suche nach neuen Loks.
-  fn get_protokoll_telegrammme(&mut self, _sm_aktiv: bool) -> Option<DdlTel> {
+  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
     None
   }
   /// Auswertung automatische Dekoderanmeldung (z.B. bei MFX).
@@ -231,6 +229,34 @@ pub trait DdlProtokoll {
   /// * adr : Schienenadresse der GL
   fn read_gl_parameter(&mut self, _adr: u32) -> ResultReadGlParameter {
     ResultReadGlParameter::Error
+  }
+  /// Dekoderkonfiguration (SM) Start
+  fn sm_init(&mut self) {}
+  /// Dekoderkonfiguration (SM) Ende
+  fn sm_term(&mut self) {}
+  /// Dekoderkonfiguration (SM) Write Value.
+  /// # Arguments
+  /// * adr - Schienenadresse der GL, 0 für Broadcast
+  /// * sm_type - Type des Zugriffes (aus srcp Protokoll)
+  /// * para - Parameter für Write Zugriff (protokollabhängig)
+  /// * value - zu schreibender Wert
+  /// * session_id - Session ID von der das Kommando kam um eine Antwort an diese zu senden.
+  fn sm_write(
+    &mut self, _adr: u32, _sm_type: &String, _para: &Vec<u32>, _value: u32, _session_id: u32,
+  ) {
+  }
+  /// Dekoderkonfiguration (SM) Read Value.
+  /// # Arguments
+  /// * adr - Schienenadresse der GL, 0 für Broadcast
+  /// * sm_type - Type des Zugriffes (aus srcp Protokoll)
+  /// * para - Parameter für Write Zugriff (protokollabhängig)
+  /// * session_id - Session ID von der das Kommando kam um eine Antwort an diese zu senden.
+  fn sm_read(&mut self, _adr: u32, _sm_type: &String, _para: &Vec<u32>, _session_id: u32) {}
+  /// Liefert alle in "sm_read" und "sm_write" unterstützten Typen mit der Anzahl erwarteter Parameter
+  /// ohne Value für SET.
+  /// None wenn SM nicht unterstützt wird.
+  fn sm_get_all_types(&self) -> Option<HashMap<String, usize>> {
+    None
   }
 }
 

@@ -14,7 +14,7 @@ pub trait SRCPDeviceDDL {
   /// * cmd_msg - Empfangenes Kommando
   fn validate_cmd(&self, cmd_msg: &SRCPMessage) -> bool;
   /// Empfangenes Kommando ausführen und versenden, ggf. interne Daten Updaten für späteren Refresh.
-  /// Das Kommando muss gültig sein (validate_cmd), es wird hier nicht ,ehr überprüft.
+  /// Das Kommando muss gültig sein (validate_cmd), es wird hier nicht mehr überprüft.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
   fn execute_cmd(&mut self, cmd_msg: &SRCPMessage);
