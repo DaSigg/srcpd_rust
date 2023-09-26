@@ -18,49 +18,36 @@ const GPIO_MFX_RDS_DAT: u16 = 24;
 const MFX_FX_COUNT: usize = 16;
 
 /// Alle möglichen MFX Dekoder Blocktypen
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 #[allow(dead_code)]
 enum BlockTypenE {
-  BlockGrundeinstellungen,
-  BlockFunktionalitaet,
-  BlockAutofunktionen,
-  BlockFunktionMapping,
-  BlockFahr,
-  BlockAusgaenge,
-  BlockProtokolle,
-  BlockSound,
-  BlockOptionen,
+  BlockGrundeinstellungen = 1,
+  BlockFunktionalitaet = 2,
+  BlockAutofunktionen = 3,
+  BlockFunktionMapping = 4,
+  BlockFahr = 5,
+  BlockAusgaenge = 6,
+  BlockProtokolle = 7,
+  BlockSound = 8,
+  BlockOptionen = 9,
 }
 impl BlockTypenE {
-  /// Liefert die binäre ID
-  fn value(&self) -> u8 {
-    match self {
-      BlockTypenE::BlockGrundeinstellungen => 1,
-      BlockTypenE::BlockFunktionalitaet => 2,
-      BlockTypenE::BlockAutofunktionen => 3,
-      BlockTypenE::BlockFunktionMapping => 4,
-      BlockTypenE::BlockFahr => 5,
-      BlockTypenE::BlockAusgaenge => 6,
-      BlockTypenE::BlockProtokolle => 7,
-      BlockTypenE::BlockSound => 8,
-      BlockTypenE::BlockOptionen => 9,
-    }
-  }
-  /// Liefert den enum, None bei ungültigem Value
+  /// Liefert Blocktype als enum von einem Byte
+  /// Liefert None, wenn ungültiger Wert
   /// # Arguments
-  /// * value - u8 Value aus dem der enum gebildet werden soll
-  fn from(value: u8) -> Option<BlockTypenE> {
-    match value {
-      1 => Some(BlockTypenE::BlockGrundeinstellungen),
-      2 => Some(BlockTypenE::BlockFunktionalitaet),
-      3 => Some(BlockTypenE::BlockAutofunktionen),
-      4 => Some(BlockTypenE::BlockFunktionMapping),
-      5 => Some(BlockTypenE::BlockFahr),
-      6 => Some(BlockTypenE::BlockAusgaenge),
-      7 => Some(BlockTypenE::BlockProtokolle),
-      8 => Some(BlockTypenE::BlockSound),
-      9 => Some(BlockTypenE::BlockOptionen),
-      _ => None,
+  /// * val - Wert aus dem der enum erzeugt werden soll.
+  fn from(val: u8) -> Option<BlockTypenE> {
+    match val {
+      x if x == BlockTypenE::BlockGrundeinstellungen as u8 => Some(BlockTypenE::BlockGrundeinstellungen),
+      x if x == BlockTypenE::BlockFunktionalitaet as u8 => Some(BlockTypenE::BlockFunktionalitaet),
+      x if x == BlockTypenE::BlockAutofunktionen as u8 => Some(BlockTypenE::BlockAutofunktionen),
+      x if x == BlockTypenE::BlockFunktionMapping as u8 => Some(BlockTypenE::BlockFunktionMapping),
+      x if x == BlockTypenE::BlockFahr as u8 => Some(BlockTypenE::BlockFahr),
+      x if x == BlockTypenE::BlockAusgaenge as u8 => Some(BlockTypenE::BlockAusgaenge),
+      x if x == BlockTypenE::BlockProtokolle as u8 => Some(BlockTypenE::BlockProtokolle),
+      x if x == BlockTypenE::BlockSound as u8 => Some(BlockTypenE::BlockSound),
+      x if x == BlockTypenE::BlockOptionen as u8 => Some(BlockTypenE::BlockOptionen),
+      _ => None
     }
   }
 }
@@ -207,13 +194,13 @@ pub struct CaParameter {
 }
 /// Auftragtypen für "MfxRdsJob"
 pub enum MfxRdsJobType {
-  ReadAllInitParameter, //Antwort sind alle notwendigen Init Parameter (Lokname und Funktionen)
+  ReadAllInitParameter, //Antwort sind alle notwendigen Init Parameter (Lokname und Funktionen) über Sender "tx_lok_init"
   ReadCA {
-    //Antwort ist gelesener Wert
+    //Antwort ist gelesener Wert über "Sender "tx"
     ca_parameter: CaParameter,
   },
   WriteCA {
-    //Antwort WriteOK
+    //Antwort WriteOK über "Sender "tx"
     ca_parameter: CaParameter,
     value: u8,
   },
@@ -290,17 +277,18 @@ impl MfxRdsJob {
   }
 }
 
-/// Antworttypen auf MfxRdsJob
-pub enum MfxRdsJobAnsType {
+/// Antworttyp auf MfxRdsJob für ReadAllInitParameter, None = Error
+pub type MfxRdsJobAnsLokInitType = Vec<String>;
+/// Antworttyp auf MfxRdsJob für ReadCa/WriteCA
+pub enum MfxRdsJobAnsCAType {
   Error,
   WriteOK,                    //Write wurde erfolgreich ausgegeben
   ReadValue(u8),              //CA Read
-  InitParamater(Vec<String>), //ReadAllInitParameter
 }
 /// Antwort auf MfxRdsJob
-pub struct MfxRdsJobAns {
+pub struct MfxRdsJobAnsReadWriteCA {
   /// Die Antwort
-  pub mfx_rds_job_ans_typ: MfxRdsJobAnsType,
+  pub mfx_rds_job_ans_typ: MfxRdsJobAnsCAType,
   /// Session ID aus MfxRdsJob
   pub session_id: Option<u32>,
 }
@@ -382,8 +370,10 @@ pub struct MfxRdsFeedbackThread {
   gpio_mfx_rds_dat: SysFsGpioInput,
   /// Receiver für Aufträge
   rx: Receiver<MfxRdsJob>,
-  /// Sender für Ergenisse der Aufträge, siehe "MfxRdsJobType"
-  tx: Sender<MfxRdsJobAns>,
+  /// Sender für Ergenisse der Aufträge, siehe "MfxRdsJobType" als Antwort auf "ReadCA"/"WriteCA"
+  tx: Sender<MfxRdsJobAnsReadWriteCA>,
+  /// Sender für Ergenisse der Aufträge, siehe "MfxRdsJobType" als Antwort auf "ReadAllInitParameter"
+  tx_lok_init: Sender<Option<MfxRdsJobAnsLokInitType>>,
   /// Sender für über SPI zu versendende Telegramme
   tx_tel: Sender<MfxCvTel>,
   /// Für welche Adresse ist der aktuelle Cache gültig?
@@ -395,11 +385,12 @@ pub struct MfxRdsFeedbackThread {
 impl MfxRdsFeedbackThread {
   /// Neue Instanz erstellen
   /// # Arguments
-  /// * rx - Empfang von Aufträge, es wird die erwartetet Anzahl Bytes übermittelt.
-  /// * tx - Sender zum versenden er eingelesen Rückmeldungen
+  /// * rx - Empfang von Aufträge.
+  /// * tx - Sender zum versenden er eingelesen Rückmeldungen als Antwort auf "ReadCA"/"WriteCA"
+  /// * tx_lok_init - Sender zum versenden von Lok-Init Daten als Antwort auf "ReadAllInitParameter"
   /// * tx_tel - Sender zum versenden von auszugebenden Telegrammen
   pub fn new(
-    rx: Receiver<MfxRdsJob>, tx: Sender<MfxRdsJobAns>, tx_tel: Sender<MfxCvTel>,
+    rx: Receiver<MfxRdsJob>, tx: Sender<MfxRdsJobAnsReadWriteCA>, tx_lok_init: Sender<Option<MfxRdsJobAnsLokInitType>>, tx_tel: Sender<MfxCvTel>,
   ) -> MfxRdsFeedbackThread {
     MfxRdsFeedbackThread {
       gpio_mfx_rds_qal: SysFsGpioInput::open(GPIO_MFX_RDS_QAL)
@@ -410,6 +401,7 @@ impl MfxRdsFeedbackThread {
         .expect(format!("GPIO_MFX_RDS_DAT konnte nicht geöffnet werden").as_str()),
       rx,
       tx,
+      tx_lok_init,
       tx_tel,
       cv_cache_adr: 0,
       cv_cache: HashMap::new(),
@@ -688,6 +680,7 @@ impl MfxRdsFeedbackThread {
     }
     //Alle andern Blöcke müssen gesucht werden -> zuerst Liste mit allen Blöcken auslesen
     //Das gibt eine kleine Rekursion...
+    let block_as_u8 = block.clone() as u8;
     if let Some((_cv_bl, block_liste)) = self.read_ca(
       adr,
       BlockTypenE::BlockGrundeinstellungen,
@@ -707,7 +700,7 @@ impl MfxRdsFeedbackThread {
         let start_cv = block_liste[i] as u16 * 4;
         debug!("MFX Blockliste Index={}, Block at CV={}", i, start_cv);
         if let Some(block_id) = self.read_cv(adr, start_cv, 1, MfxCvTelBytes::Cc1byte) {
-          if block_id[0] == block.value() {
+          if block_id[0] == block_as_u8 {
             debug!("Block {:?} gefunden an CV={}", block, start_cv);
             //Block gefunden
             //Noch Gruppen Infos auslesen
@@ -752,7 +745,7 @@ impl MfxRdsFeedbackThread {
       adr, block, ca
     );
     let (ca_len, ca_id) = ca.value();
-    if let Some(cv) = self.find_ca(adr, block.value(), ca_id, ca_index) {
+    if let Some(cv) = self.find_ca(adr, block.clone() as u8, ca_id, ca_index) {
       //CV zu CA gefunden
       debug!("CA {:?} gefunden an CV {}", ca, cv);
       //Ganzer CA auslesen
@@ -939,11 +932,9 @@ impl MfxRdsFeedbackThread {
               para.push(fx[i].to_string());
             }
             self
-              .tx
-              .send(MfxRdsJobAns {
-                mfx_rds_job_ans_typ: MfxRdsJobAnsType::InitParamater(para),
-                session_id: auftrag.session_id,
-              })
+              .tx_lok_init
+              .send( Some(para)
+              )
               .unwrap();
           } else {
             warn!(
@@ -951,11 +942,8 @@ impl MfxRdsFeedbackThread {
               auftrag.adr
             );
             self
-              .tx
-              .send(MfxRdsJobAns {
-                mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
-                session_id: auftrag.session_id,
-              })
+              .tx_lok_init
+              .send(None)
               .unwrap();
           }
         }
@@ -972,8 +960,8 @@ impl MfxRdsFeedbackThread {
               //Alles OK, Antwort zurück senden
               self
                 .tx
-                .send(MfxRdsJobAns {
-                  mfx_rds_job_ans_typ: MfxRdsJobAnsType::ReadValue(val[0]),
+                .send(MfxRdsJobAnsReadWriteCA {
+                  mfx_rds_job_ans_typ: MfxRdsJobAnsCAType::ReadValue(val[0]),
                   session_id: auftrag.session_id,
                 })
                 .unwrap();
@@ -984,8 +972,8 @@ impl MfxRdsFeedbackThread {
               );
               self
                 .tx
-                .send(MfxRdsJobAns {
-                  mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
+                .send(MfxRdsJobAnsReadWriteCA {
+                  mfx_rds_job_ans_typ: MfxRdsJobAnsCAType::Error,
                   session_id: auftrag.session_id,
                 })
                 .unwrap();
@@ -997,8 +985,8 @@ impl MfxRdsFeedbackThread {
             );
             self
               .tx
-              .send(MfxRdsJobAns {
-                mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
+              .send(MfxRdsJobAnsReadWriteCA {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsCAType::Error,
                 session_id: auftrag.session_id,
               })
               .unwrap();
@@ -1018,8 +1006,8 @@ impl MfxRdsFeedbackThread {
             //Alles OK, Antwort zurück senden
             self
               .tx
-              .send(MfxRdsJobAns {
-                mfx_rds_job_ans_typ: MfxRdsJobAnsType::WriteOK,
+              .send(MfxRdsJobAnsReadWriteCA {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsCAType::WriteOK,
                 session_id: auftrag.session_id,
               })
               .unwrap();
@@ -1030,8 +1018,8 @@ impl MfxRdsFeedbackThread {
             );
             self
               .tx
-              .send(MfxRdsJobAns {
-                mfx_rds_job_ans_typ: MfxRdsJobAnsType::Error,
+              .send(MfxRdsJobAnsReadWriteCA {
+                mfx_rds_job_ans_typ: MfxRdsJobAnsCAType::Error,
                 session_id: auftrag.session_id,
               })
               .unwrap();

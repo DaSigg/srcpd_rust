@@ -10,7 +10,7 @@ use log::{info, warn};
 
 use crate::{
   srcp_mfx_rds::{
-    MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob, MfxRdsJobAns, MfxRdsJobAnsType,
+    MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob, MfxRdsJobAnsReadWriteCA, MfxRdsJobAnsLokInitType,
   },
   srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode, ResultReadGlParameter},
 };
@@ -175,8 +175,10 @@ pub struct MfxProtokoll {
   rds_1_bit_start_pos: usize,
   /// Channel für Aufträge an RDS Thread
   tx_to_rds: Sender<MfxRdsJob>,
-  /// Channel für Antworten von RDS Thread
-  rx_from_rds: Receiver<MfxRdsJobAns>,
+  /// Channel für Antworten von RDS Thread von neu angemeldeten GL Init Parametern
+  rx_from_rds_read_write_ca: Receiver<MfxRdsJobAnsReadWriteCA>,
+  /// Channel für Antworten von RDS Thread von neu angemeldeten GL Init Parametern
+  rx_from_rds_lok_init: Receiver<Option<MfxRdsJobAnsLokInitType>>,
   /// Channel für Tel. Sendeaufträge vom RDS Thread
   rx_tel_from_rds: Receiver<MfxCvTel>,
   /// Wenn das lesen von Lokparametern im Gange ist, ist hier die Adresse dieser Lok enthalten
@@ -209,8 +211,11 @@ impl MfxProtokoll {
     //Channels zur Kommunikation mit RDS Thread
     //-> Aufträge zum RDS Thread
     let (tx_to_rds, rx_in_rds): (Sender<MfxRdsJob>, Receiver<MfxRdsJob>) = mpsc::channel();
-    //<- Antworten vom RDS Thread
-    let (tx_from_rds, rx_from_rds): (Sender<MfxRdsJobAns>, Receiver<MfxRdsJobAns>) =
+    //<- Antworten Lok Init vom RDS Thread
+    let (tx_from_rds_lok_init, rx_from_rds_lok_init): (Sender<Option<MfxRdsJobAnsLokInitType>>, Receiver<Option<MfxRdsJobAnsLokInitType>>) =
+      mpsc::channel();
+    //<- Antworten ReadCA/WriteCA vom RDS Thread
+    let (tx_from_rds_read_write_ca, rx_from_rds_read_write_ca): (Sender<MfxRdsJobAnsReadWriteCA>, Receiver<MfxRdsJobAnsReadWriteCA>) =
       mpsc::channel();
     //<- MFX Tel. Sendeaufträge vom RDS Thread
     let (tx_tel_from_rds, rx_tel_from_rds): (Sender<MfxCvTel>, Receiver<MfxCvTel>) =
@@ -218,7 +223,7 @@ impl MfxProtokoll {
     //RDS Einlesethread starten
     thread::Builder::new()
       .name("RDS Feedbackthread".to_string())
-      .spawn(move || MfxRdsFeedbackThread::new(rx_in_rds, tx_from_rds, tx_tel_from_rds).execute())
+      .spawn(move || MfxRdsFeedbackThread::new(rx_in_rds, tx_from_rds_read_write_ca, tx_from_rds_lok_init, tx_tel_from_rds).execute())
       .unwrap();
 
     MfxProtokoll {
@@ -237,7 +242,8 @@ impl MfxProtokoll {
       search_new_dekoder_uid: 0,
       rds_1_bit_start_pos: 0,
       tx_to_rds,
-      rx_from_rds,
+      rx_from_rds_read_write_ca,
+      rx_from_rds_lok_init,
       rx_tel_from_rds,
       read_gl_parameter: None,
       sm_aktiv: false,
@@ -964,34 +970,18 @@ impl DdlProtokoll for MfxProtokoll {
     if let Some(adr_read_gl_parameter) = self.read_gl_parameter {
       if adr_read_gl_parameter == adr {
         //Ist ein Ergebnis vorhanden?
-        if let Ok(rx_rds) = self.rx_from_rds.try_recv() {
+        if let Ok(init_parameter) = self.rx_from_rds_lok_init.try_recv() {
           //Antwort vorhanden
-          match rx_rds.mfx_rds_job_ans_typ {
-            MfxRdsJobAnsType::Error => {
-              //Fehler, Abbruch
-              result = ResultReadGlParameter::Error;
-              self.read_gl_parameter = None;
-            }
-            MfxRdsJobAnsType::WriteOK => {
-              //Hier werden nur die gesamten Lokparameter für Init ausgelesen, keine CA's geschrieben.
-              //Diese Antwort darf hier nie kommen
-              //Fehler, Abbruch
-              result = ResultReadGlParameter::Error;
-              self.read_gl_parameter = None;
-            }
-            MfxRdsJobAnsType::ReadValue(_) => {
-              //Hier werden nur die gesamten Lokparameter für Init ausgelesen, keine einzelnen CA's
-              //Einzelne CA's wird nur über SM verwendet, diese Antwort darf hier nie kommen
-              //Fehler, Abbruch
-              result = ResultReadGlParameter::Error;
-              self.read_gl_parameter = None;
-            }
-            MfxRdsJobAnsType::InitParamater(init_parameter) => {
-              //Auslesen hat funktioniert
-              result = ResultReadGlParameter::Ok(init_parameter);
-              //Fertig
-              self.read_gl_parameter = None;
-            }
+          if init_parameter.is_some() {
+            //Auslesen hat funktioniert
+            result = ResultReadGlParameter::Ok(init_parameter.unwrap());
+            //Fertig
+            self.read_gl_parameter = None;
+          }
+          else {
+           //Fehler, Abbruch
+           result = ResultReadGlParameter::Error;
+           self.read_gl_parameter = None;
           }
         }
       } else {
