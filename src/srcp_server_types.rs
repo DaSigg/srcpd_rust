@@ -134,7 +134,7 @@ impl SRCPMessage {
       parameter: vec![],
     }
   }
-  /// Neue SRCPMessage Ok erstellen
+  /// Neue SRCPMessage Error erstellen
   /// # Arguments
   /// * msg - Kommandomessage aus der Session, Bus, Device kopiert werden.
   /// * err_code - Zu verwendender OK Code

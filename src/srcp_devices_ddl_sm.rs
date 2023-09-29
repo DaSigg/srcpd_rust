@@ -2,14 +2,14 @@ use std::{collections::HashMap, sync::mpsc::Sender};
 
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
-  srcp_protocol_ddl::{DdlProtokolle, HashMapProtokollVersion},
-  srcp_server_types::{SRCPMessage, SRCPMessageID, SRCPMessageType},
+  srcp_protocol_ddl::{DdlProtokolle, HashMapProtokollVersion, SmReadWrite},
+  srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType},
 };
 
 /// SM Device
 pub struct DdlSM {
   //SRCP Bus auf dem gearbeitet wird
-  _bus: usize, //Wird hier nicht verwendet, da keine SCRP Info Message gesendet werden.
+  bus: usize,
   //Sender für SRCP Antworten
   tx: Sender<SRCPMessage>,
   //Alle vorhandenen Protokollimplementierungen mit allen Versionen
@@ -39,7 +39,7 @@ impl DdlSM {
       (DdlProtokolle::Mfx.to_string(), "0".to_string()),
     );
     DdlSM {
-      _bus: bus,
+      bus,
       tx,
       all_protokolle,
       gl_ga_prot_names,
@@ -224,12 +224,13 @@ impl SRCPDeviceDDL for DdlSM {
         //Protokoll für SM
         let (prot, prot_ver) = self.sm_protokoll.as_ref().unwrap();
         let protokoll = &self.all_protokolle[prot][prot_ver.as_str()];
-        protokoll.borrow_mut().sm_read(
-          cmd_msg.get_adr().unwrap(),
-          &cmd_msg.parameter[1],
-          &param,
-          cmd_msg.session_id.unwrap(),
-        );
+        protokoll.borrow_mut().sm_read_write(&SmReadWrite {
+          adr: cmd_msg.get_adr().unwrap(),
+          sm_type: cmd_msg.parameter[1].clone(),
+          para: param,
+          val: None,
+          session_id: cmd_msg.session_id.unwrap(),
+        });
       }
       SRCPMessageType::SET => {
         //Alle (nach Type bis Schluss - 1) notwendigen Parameter zu Vec<u32> konvertieren.
@@ -242,13 +243,13 @@ impl SRCPDeviceDDL for DdlSM {
         //Protokoll für SM
         let (prot, prot_ver) = self.sm_protokoll.as_ref().unwrap();
         let protokoll = &self.all_protokolle[prot][prot_ver.as_str()];
-        protokoll.borrow_mut().sm_write(
-          cmd_msg.get_adr().unwrap(),
-          &cmd_msg.parameter[1],
-          &param,
-          value,
-          cmd_msg.session_id.unwrap(),
-        );
+        protokoll.borrow_mut().sm_read_write(&SmReadWrite {
+          adr: cmd_msg.get_adr().unwrap(),
+          sm_type: cmd_msg.parameter[1].clone(),
+          para: param,
+          val: Some(value),
+          session_id: cmd_msg.session_id.unwrap(),
+        });
       }
     }
   }
@@ -259,5 +260,52 @@ impl SRCPDeviceDDL for DdlSM {
   ///                None -> Info an alle SRCP Clients
   fn send_all_info(&self, _session_id: Option<u32>) {
     //SM hat keine internen Zustände die an alle SRCP Info Clients gensendet werden müssen
+  }
+  /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
+  /// von neuen Kommando oder refresh unabhängigen Aufgaben.
+  /// Hier: Wenn vorhanden SM Info-Antwort Messages als srcp Message zurück senden
+  /// # Arguments
+  /// * power - true: Power / Booster ist ein, Strom auf den Schienen
+  ///           false: Power / Booster ist aus
+  fn execute(&mut self, _power: bool) {
+    for (_, prot_familie) in &self.all_protokolle {
+      for (_, prot) in prot_familie {
+        if let Some(ans) = prot.borrow_mut().sm_get_answer() {
+          let mut srcp_para: Vec<String> = Vec::new();
+          //Paramater zu SM sind: adr sm_type <alle paramater> value
+          srcp_para.push(ans.adr.to_string());
+          srcp_para.push(ans.sm_type);
+          for p in ans.para {
+            srcp_para.push(p.to_string());
+          }
+          srcp_para.push(ans.val.unwrap().to_string());
+          let srcp_message = if ans.val.is_some() {
+            //OK Message
+            SRCPMessage {
+              session_id: Some(ans.session_id),
+              bus: self.bus,
+              message_id: SRCPMessageID::Info {
+                info_code: "200".to_string(),
+              },
+              device: SRCPMessageDevice::SM,
+              parameter: srcp_para,
+            }
+          } else {
+            //Error
+            SRCPMessage {
+              session_id: Some(ans.session_id),
+              bus: self.bus,
+              message_id: SRCPMessageID::Err {
+                err_code: "417".to_string(),
+                err_text: "timeout".to_string(),
+              },
+              device: SRCPMessageDevice::SM,
+              parameter: srcp_para,
+            }
+          };
+          self.tx.send(srcp_message).unwrap();
+        }
+      }
+    }
   }
 }

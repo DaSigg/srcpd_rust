@@ -9,10 +9,8 @@ use std::{
 use log::{info, warn};
 
 use crate::{
-  srcp_mfx_rds::{
-    MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob, MfxRdsJobAnsReadWriteCA, MfxRdsJobAnsLokInitType,
-  },
-  srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode, ResultReadGlParameter},
+  srcp_mfx_rds::{MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob},
+  srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode, ResultReadGlParameter, SmReadWrite},
 };
 
 //SPI Baudrate für MFX.
@@ -175,10 +173,10 @@ pub struct MfxProtokoll {
   rds_1_bit_start_pos: usize,
   /// Channel für Aufträge an RDS Thread
   tx_to_rds: Sender<MfxRdsJob>,
+  /// Channel für Antworten von RDS Thread von SM Read/Write
+  rx_from_rds_read_write_ca: Receiver<SmReadWrite>,
   /// Channel für Antworten von RDS Thread von neu angemeldeten GL Init Parametern
-  rx_from_rds_read_write_ca: Receiver<MfxRdsJobAnsReadWriteCA>,
-  /// Channel für Antworten von RDS Thread von neu angemeldeten GL Init Parametern
-  rx_from_rds_lok_init: Receiver<Option<MfxRdsJobAnsLokInitType>>,
+  rx_from_rds_lok_init: Receiver<Option<Vec<String>>>,
   /// Channel für Tel. Sendeaufträge vom RDS Thread
   rx_tel_from_rds: Receiver<MfxCvTel>,
   /// Wenn das lesen von Lokparametern im Gange ist, ist hier die Adresse dieser Lok enthalten
@@ -212,18 +210,30 @@ impl MfxProtokoll {
     //-> Aufträge zum RDS Thread
     let (tx_to_rds, rx_in_rds): (Sender<MfxRdsJob>, Receiver<MfxRdsJob>) = mpsc::channel();
     //<- Antworten Lok Init vom RDS Thread
-    let (tx_from_rds_lok_init, rx_from_rds_lok_init): (Sender<Option<MfxRdsJobAnsLokInitType>>, Receiver<Option<MfxRdsJobAnsLokInitType>>) =
-      mpsc::channel();
+    let (tx_from_rds_lok_init, rx_from_rds_lok_init): (
+      Sender<Option<Vec<String>>>,
+      Receiver<Option<Vec<String>>>,
+    ) = mpsc::channel();
     //<- Antworten ReadCA/WriteCA vom RDS Thread
-    let (tx_from_rds_read_write_ca, rx_from_rds_read_write_ca): (Sender<MfxRdsJobAnsReadWriteCA>, Receiver<MfxRdsJobAnsReadWriteCA>) =
-      mpsc::channel();
+    let (tx_from_rds_read_write_ca, rx_from_rds_read_write_ca): (
+      Sender<SmReadWrite>,
+      Receiver<SmReadWrite>,
+    ) = mpsc::channel();
     //<- MFX Tel. Sendeaufträge vom RDS Thread
     let (tx_tel_from_rds, rx_tel_from_rds): (Sender<MfxCvTel>, Receiver<MfxCvTel>) =
       mpsc::channel();
     //RDS Einlesethread starten
     thread::Builder::new()
       .name("RDS Feedbackthread".to_string())
-      .spawn(move || MfxRdsFeedbackThread::new(rx_in_rds, tx_from_rds_read_write_ca, tx_from_rds_lok_init, tx_tel_from_rds).execute())
+      .spawn(move || {
+        MfxRdsFeedbackThread::new(
+          rx_in_rds,
+          tx_from_rds_read_write_ca,
+          tx_from_rds_lok_init,
+          tx_tel_from_rds,
+        )
+        .execute()
+      })
       .unwrap();
 
     MfxProtokoll {
@@ -977,11 +987,10 @@ impl DdlProtokoll for MfxProtokoll {
             result = ResultReadGlParameter::Ok(init_parameter.unwrap());
             //Fertig
             self.read_gl_parameter = None;
-          }
-          else {
-           //Fehler, Abbruch
-           result = ResultReadGlParameter::Error;
-           self.read_gl_parameter = None;
+          } else {
+            //Fehler, Abbruch
+            result = ResultReadGlParameter::Error;
+            self.read_gl_parameter = None;
           }
         }
       } else {
@@ -1008,46 +1017,15 @@ impl DdlProtokoll for MfxProtokoll {
     self.sm_aktiv = false;
   }
 
-  /// Dekoderkonfiguration (SM) Write Value.
+  /// Dekoderkonfiguration (SM) Read/Write Value.
   /// # Arguments
-  /// * adr - Schienenadresse der GL, 0 für Broadcast
-  /// * sm_type - Type des Zugriffes (aus srcp Protokoll), hier nicht verwendet, es gibt nur CAMFX
-  /// * para - Parameter für Write Zugriff (protokollabhängig)
-  /// * value - zu schreibender Wert
-  /// * session_id - Session ID von der das Kommando kam um eine Antwort an diese zu senden.
-  fn sm_write(
-    &mut self, adr: u32, _sm_type: &String, para: &Vec<u32>, value: u32, session_id: u32,
-  ) {
+  /// * sm_para - Alle notwndigen Paramater für SM Read/Write
+  fn sm_read_write(&mut self, sm_para: &SmReadWrite) {
     self
       .tx_to_rds
-      .send(MfxRdsJob::new_write_ca(
-        adr,
-        para[0] as u8,
-        para[1] as u8,
-        para[2] as u8,
-        para[3] as u8,
-        value as u8,
-        session_id,
-      ))
-      .unwrap();
-  }
-  /// Dekoderkonfiguration (SM) Read Value.
-  /// # Arguments
-  /// * adr - Schienenadresse der GL, 0 für Broadcast
-  /// * sm_type - Type des Zugriffes (aus srcp Protokoll), hier nicht verwendet, es gibt nur CAMFX
-  /// * para - Parameter für Write Zugriff (protokollabhängig)
-  /// * session_id - Session ID von der das Kommando kam um eine Antwort an diese zu senden.
-  fn sm_read(&mut self, adr: u32, _sm_type: &String, para: &Vec<u32>, session_id: u32) {
-    self
-      .tx_to_rds
-      .send(MfxRdsJob::new_read_ca(
-        adr,
-        para[0] as u8,
-        para[1] as u8,
-        para[2] as u8,
-        para[3] as u8,
-        session_id,
-      ))
+      .send(MfxRdsJob::ReadWriteCA {
+        ca_parameter: sm_para.clone(),
+      })
       .unwrap();
   }
   /// Liefert alle in "sm_read" und "sm_write" unterstützten Typen mit der Anzahl erwarteter Parameter
@@ -1060,5 +1038,10 @@ impl DdlProtokoll for MfxProtokoll {
     //4 Parameter bei Zugriff auf MFX Konfigvariabeln: Block, CA, CA_Index, Index
     result.insert("CAMFX".to_string(), 4);
     Some(result)
+  }
+  /// Liefert die Antwort sm_read_write zurück.
+  /// None wenn keine Antwort verfügbar.
+  fn sm_get_answer(&self) -> Option<SmReadWrite> {
+    self.rx_from_rds_read_write_ca.try_recv().ok()
   }
 }

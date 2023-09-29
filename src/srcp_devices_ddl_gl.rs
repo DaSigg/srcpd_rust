@@ -723,7 +723,6 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
         for (_version, prot_impl) in prot_versionen {
           let mut p = prot_impl.borrow_mut();
-          //SM (keine Loksuche) wenn eine GL in SM ist oder bereits eine auto Anmeldung läuft
           if let Some(tel) = p.get_protokoll_telegrammme().as_mut() {
             self.send_tel(tel);
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
@@ -763,10 +762,8 @@ impl SRCPDeviceDDL for DdlGL<'_> {
               }
             }
           }
-          if self.gl_param_read.is_none() {
-            //Wenn keine Lokanmeldung aktiv ist, dann könnte ein SM Meldung bereit liegen
-            todo!()
-          }
+          //Wenn Antworten von SM Read/Write vorliegen, dann diese über srcp Session zurücksenden
+          todo!()
         }
       }
       //Optionale GL Parameter für automatisch neu angemeldete GL's lesen

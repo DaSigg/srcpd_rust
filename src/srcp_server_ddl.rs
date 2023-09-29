@@ -356,7 +356,7 @@ impl DDL {
       if !power_on {
         thread::sleep(POWER_OFF_CPU_PAUSE);
       }
-      //Allen Devices die Möglichkeit geben Hintergrundaufgaben abzuarbeiten
+      //Allen Devices die Möglichkeit geben Hintergrundaufgaben abzuarbeiten, wenn vorhanden SM Antwort zurück senden
       for (_, dev) in &all_devices {
         dev.borrow_mut().execute(power_on);
       }
