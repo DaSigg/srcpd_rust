@@ -454,13 +454,18 @@ impl MMProtokoll {
 }
 impl DdlProtokoll for MMProtokoll {
   /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
+  /// Liefert immer None, kein GL Init Tel. notwendig
   /// # Arguments
   /// * adr - Adresse der Lok
-  /// * uid - UID des Dekoders -> hier nicht verwendet
+  /// * uid - nicht verwendet
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
-  fn init_gl(&mut self, adr: u32, _uid: Option<u32>, funk_anz: usize) {
+  /// * power - nicht verwendet
+  fn init_gl(
+    &mut self, adr: u32, _uid: Option<u32>, funk_anz: usize, _power: bool,
+  ) -> Option<DdlTel> {
     self.funk_anz[adr as usize] = funk_anz;
+    None
   }
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> u32 {

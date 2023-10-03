@@ -23,12 +23,19 @@ use std::{
 use log::{error, info, warn};
 use splitty::split_unquoted_char;
 
-use crate::srcp_server_types::{Message, SRCPMessage};
+use crate::srcp_server_types::{Message, SRCPMessage, SRCPMessageDevice};
 
-//Unterstützte SRCP version
+/// Unterstützte SRCP version
 const SRCP_VERSION: &'static str = "0.8.4";
+/// Timeout für alle Kommandos ausser SM, diese werden immer sofort beantwortet, keine Verzögerungen
+const CMD_TIMEOUT: Duration = Duration::from_millis(200);
+/// Timeout für alle SM Kommandos, diese werden erst bei vorliegen Resultat beantwortet
+/// In einer Kommandosession wird nur immer ein Kommando um das andere abgearbeitet, blockiert bis Antwort vorliegt.
+/// Deshalb sollten Clients SM Kommandos jeweils in einer eigenen Session senden um die Abarbeitung von anderen
+/// Kommandos nicht zu verzögern!
+const CMD_SM_TIMEOUT: Duration = Duration::from_millis(10000);
 
-//Verwaltung Sender und Session
+/// Verwaltung Sender und Session
 struct SenderSession {
   sender: Sender<SRCPMessage>,
   session_id: u32,
@@ -254,17 +261,24 @@ fn handle_srcp_commandmode(
         //Prüfen ob verlangter Bus existiert
         match all_cmd_tx.get(&srcp_msg.bus) {
           Some(sender) => {
-            sender.send(Message::new_srcpmessage(srcp_msg)).unwrap();
+            sender
+              .send(Message::new_srcpmessage(srcp_msg.clone()))
+              .unwrap();
             //Warten auf Antwort
-            if let Ok(msg) = info_rx.recv_timeout(Duration::from_millis(500)) {
+            if let Ok(msg) = info_rx.recv_timeout(if srcp_msg.device == SRCPMessageDevice::SM {
+              CMD_SM_TIMEOUT
+            } else {
+              CMD_TIMEOUT
+            }) {
+              //info!("SRCP Antwort: {}", msg.to_string());
               if let Err(msg) = send_srcp_message(client_stream, msg.to_string().as_str()) {
                 warn!("{}", msg);
                 break;
               }
             } else {
               warn!(
-                "Keine Antwort von SRCP Server an Bus {} erhalten.",
-                cmd_parts[1]
+                "Keine Antwort von SRCP Server an Bus {} erhalten. Kommando {:?}",
+                cmd_parts[1], srcp_msg
               );
               if let Err(msg) = send_srcp_error(client_stream, "417", "timeout") {
                 warn!("{}", msg);

@@ -146,10 +146,6 @@ impl SRCPDeviceDDL for DdlSM {
                       break;
                     }
                   }
-                  if result {
-                    //OK an diese Session
-                    self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
-                  }
                 } else {
                   self
                     .tx
@@ -206,6 +202,9 @@ impl SRCPDeviceDDL for DdlSM {
         let (prot, prot_ver) = self.sm_protokoll.as_ref().unwrap();
         let protokoll = &self.all_protokolle[prot][prot_ver.as_str()];
         protokoll.borrow_mut().sm_init();
+        //SRCP Antwort OK zurücksenden
+        let ok_msg = SRCPMessage::new_ok(cmd_msg, "200");
+        self.tx.send(ok_msg).unwrap();
       }
       SRCPMessageType::TERM => {
         //Protokoll SM TERM
@@ -214,6 +213,9 @@ impl SRCPDeviceDDL for DdlSM {
         protokoll.borrow_mut().sm_term();
         //Und kein aktives SM Protokoll mehr vorhanden
         self.sm_protokoll = None;
+        //SRCP Antwort OK zurücksenden
+        let ok_msg = SRCPMessage::new_ok(cmd_msg, "200");
+        self.tx.send(ok_msg).unwrap();
       }
       SRCPMessageType::GET => {
         //Alle (nach Type bis Schluss) notwendigen Parameter zu Vec<u32> konvertieren.
@@ -278,9 +280,9 @@ impl SRCPDeviceDDL for DdlSM {
           for p in ans.para {
             srcp_para.push(p.to_string());
           }
-          srcp_para.push(ans.val.unwrap().to_string());
           let srcp_message = if ans.val.is_some() {
             //OK Message
+            srcp_para.push(ans.val.unwrap().to_string());
             SRCPMessage {
               session_id: Some(ans.session_id),
               bus: self.bus,
@@ -303,6 +305,7 @@ impl SRCPDeviceDDL for DdlSM {
               parameter: srcp_para,
             }
           };
+          //info!("SM Antwort: {}", srcp_message.to_string());
           self.tx.send(srcp_message).unwrap();
         }
       }

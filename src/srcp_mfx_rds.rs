@@ -1,6 +1,7 @@
 use gpio::{sysfs::SysFsGpioInput, GpioIn, GpioValue};
 use log::{debug, info, warn};
 use std::{
+  cmp::min,
   collections::HashMap,
   sync::mpsc::{Receiver, Sender},
   thread,
@@ -13,8 +14,8 @@ use crate::srcp_protocol_ddl::SmReadWrite;
 const GPIO_MFX_RDS_QAL: u16 = 23;
 /// Input RDS Clk Signal GPIO 24 (= Pin 18)
 const GPIO_MFX_RDS_CLK: u16 = 24;
-/// Input RDS Clk Signal GPIO 25 (= Pin 22)
-const GPIO_MFX_RDS_DAT: u16 = 24;
+/// Input RDS Daten Signal GPIO 25 (= Pin 22)
+const GPIO_MFX_RDS_DAT: u16 = 25;
 
 /// Anzahl MFX Funktionen
 const MFX_FX_COUNT: usize = 16;
@@ -304,11 +305,11 @@ impl MfxRdsFeedbackThread {
   ) -> MfxRdsFeedbackThread {
     MfxRdsFeedbackThread {
       gpio_mfx_rds_qal: SysFsGpioInput::open(GPIO_MFX_RDS_QAL)
-        .expect(format!("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden").as_str()),
+        .expect("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden"),
       gpio_mfx_rds_clk: SysFsGpioInput::open(GPIO_MFX_RDS_CLK)
-        .expect(format!("GPIO_MFX_RDS_CLK konnte nicht geöffnet werden").as_str()),
+        .expect("GPIO_MFX_RDS_CLK konnte nicht geöffnet werden"),
       gpio_mfx_rds_dat: SysFsGpioInput::open(GPIO_MFX_RDS_DAT)
-        .expect(format!("GPIO_MFX_RDS_DAT konnte nicht geöffnet werden").as_str()),
+        .expect("GPIO_MFX_RDS_DAT konnte nicht geöffnet werden"),
       rx,
       tx,
       tx_lok_init,
@@ -339,22 +340,27 @@ impl MfxRdsFeedbackThread {
     let mut result = None;
     let mut values = [0 as u8; 8];
     let mut rds_check_summe = 0 as u8;
+    let mut clk_old = self.gpio_mfx_rds_clk.read_value().unwrap();
     //RDS Antwort einlesen und verarbeiten
     while state != StateRdsRx::StateFinal {
       //Warte auf nächsten Clock, positive Flanke
-      let mut clk_old = self.gpio_mfx_rds_clk.read_value().unwrap();
       loop {
-        //Daten kommen etwa im 1ms Takt. Mit 200us Wartezeit sollte nichts verpasst werden
-        thread::sleep(Duration::from_micros(200));
+        //Daten kommen etwa im 1ms Takt. Mit 100us Wartezeit sollte nichts verpasst werden
+        thread::sleep(Duration::from_micros(100));
         let clk = self.gpio_mfx_rds_clk.read_value().unwrap();
         if (clk_old == GpioValue::Low) && (clk == GpioValue::High) {
-          //Pos. Flanke erkannt
+          clk_old = clk;
+          //Pos. Flanke erkannt -> Daten einlesen
+          //Hinweis zum CLK: der verwendete RDS Chip SC6579 garantiert NICHT, ob die Daten bei pos. oder neg.
+          //Flanke ändern!
+          //Aber: sie ändern immer 4us vor der Flanke und sind ab einer Flanke 399us gültig.
+          //Damit spielt es keine Rolle, ob pos. oder neg. Flanke verwendet wird.
           break;
         }
         clk_old = clk;
         //ggf. Abbruch wegen Timeout
         if Instant::now() > (time_start + Duration::from_millis(200)) {
-          warn!("MFX RDS thread Timeout.");
+          info!("MFX RDS thread Timeout.");
           result_error = true;
           break;
         }
@@ -364,11 +370,11 @@ impl MfxRdsFeedbackThread {
       } else {
         match state {
           StateRdsRx::StateStart1 => {
-            //Während Sync Sequenz sollte RDS Qual Meldung vorhandens ein.
+            //Während Sync Sequenz sollte RDS Qual Meldung vorhanden sein.
             //Wenn nicht -> von vorne
             if self.gpio_mfx_rds_qal.read_value().unwrap() == GpioValue::Low {
+              debug!("RDS Sync Abbruch. QUAL=0. 1 count={}", count);
               count = 0;
-              info!("RDS Sync Abbruch. QUAL=0.");
             } else {
               if self.gpio_mfx_rds_dat.read_value().unwrap() == GpioValue::High {
                 //Wieder ein 1 der Sync. Sequenz eingelesen
@@ -380,7 +386,7 @@ impl MfxRdsFeedbackThread {
                   state = StateRdsRx::StateStart010;
                 } else {
                   //Wieder von vorne beginnen
-                  info!("RDS STATE_START1 Restart.");
+                  debug!("RDS STATE_START1 Restart.");
                 }
                 count = 0;
               }
@@ -397,14 +403,14 @@ impl MfxRdsFeedbackThread {
                 //0, Falsch, Abbruch
                 count = 0;
                 state = StateRdsRx::StateStart1;
-                info!("RDS STATE_START010 Abbruch -> STATE_START1.");
+                debug!("RDS STATE_START010 Abbruch -> STATE_START1.");
               }
             } else {
               if self.gpio_mfx_rds_dat.read_value().unwrap() == GpioValue::High {
                 //1 gelesen, Abbruch
                 count = 0;
                 state = StateRdsRx::StateStart1;
-                info!("RDS STATE_START010 Abbruch -> STATE_START1.");
+                debug!("RDS STATE_START010 Abbruch -> STATE_START1.");
               } else {
                 //0, OK, Startsquenz ist fertig!
                 count = 0;
@@ -421,7 +427,7 @@ impl MfxRdsFeedbackThread {
                 0
               };
             count += 1;
-            if count >= len {
+            if count >= (len * 8) {
               state = StateRdsRx::StateCheck;
               count = 0;
               debug!("RDS STATE_DATA -> STATE_CHECK.");
@@ -452,17 +458,20 @@ impl MfxRdsFeedbackThread {
         checksum ^= (checksum << 1) ^ (checksum << 2);
         checksum ^= values[i] as u16;
         if (checksum & 0x0100) != 0 {
-          checksum = checksum ^ 0x0107;
+          checksum ^= 0x0107;
         }
         if (checksum & 0x0200) != 0 {
-          checksum = checksum ^ 0x020E;
+          checksum ^= 0x020E;
         }
       }
       if checksum as u8 == rds_check_summe {
         result = Some(values[0..len].to_vec());
-        debug!("RDS Checksumme OK.");
+        info!("RDS Checksumme OK. Len={}, values={:?}", len, values);
       } else {
-        warn!("RDS Checksumme falsch.");
+        warn!(
+          "RDS Checksumme falsch. Len={}, values={:?}, Checksum={}, ChecksumCalc={}",
+          len, values, rds_check_summe, checksum
+        );
       }
     }
     result
@@ -512,7 +521,8 @@ impl MfxRdsFeedbackThread {
       }
       result = Some(v);
     } else {
-      for _ in 0..10 {
+      //Im Fehlerfall mehrmals probieren bevor aufgegeben wird.
+      for _ in 0..5 {
         self
           .tx_tel
           .send(MfxCvTel {
@@ -660,14 +670,17 @@ impl MfxRdsFeedbackThread {
       debug!("CA {:?} gefunden an CV {}", ca, cv);
       //Ganzer CA auslesen
       let mut result: Vec<u8> = Vec::new();
-      for i in 0..=(ca_len / 4) {
-        //Start ab Index 1 (nach CA Typ)
-        if let Some(val) = self.read_cv(adr, cv, 1 + (i * 4), MfxCvTelBytes::Cc4Byte) {
-          result.extend_from_slice(val.as_slice());
-        } else {
-          //Fehler, Abbruch
-          warn!("MFX readCA Abbruch. readCV fail. SID={}, CV={}", adr, cv);
-          return None;
+      //Eigentlich immer > 0, nur CaNichtVerwendet hat len=0
+      if ca_len > 0 {
+        for i in 0..=((ca_len - 1) / 4) {
+          //Start ab Index 1 (nach CA Typ)
+          if let Some(val) = self.read_cv(adr, cv, 1 + (i * 4), MfxCvTelBytes::Cc4Byte) {
+            result.extend_from_slice(val.as_slice());
+          } else {
+            //Fehler, Abbruch
+            warn!("MFX readCA Abbruch. readCV fail. SID={}, CV={}", adr, cv);
+            return None;
+          }
         }
       }
       return Some((cv, result));
@@ -781,7 +794,7 @@ impl MfxRdsFeedbackThread {
         //Für alle Funktionen die Funktionszuordnungen
         let mut fx: [u32; MFX_FX_COUNT] = [0; MFX_FX_COUNT];
         //Nun haben wir in cv die CV Nummer, an der der BLOCK_FUNKTION_MAPPING startet
-        for i in 0..funktionen.len() {
+        for i in 0..min(funktionen.len(), fx.len()) {
           if let Some(funktion) =
             self.read_cv(adr, cv + funktionen[i] as u16, 0, MfxCvTelBytes::Cc4Byte)
           {

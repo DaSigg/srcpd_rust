@@ -144,12 +144,18 @@ pub trait DdlProtokoll {
     false
   }
   /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
+  /// Liefert, wenn "power" ein allfällg notwendiges Init-Telegramm (z.B. MFX SID Zurordnung) zurück.
   /// # Arguments
   /// * adr - Adresse der Lok
   /// * uid - UID des Dekoders, wenn vorhanden
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
-  fn init_gl(&mut self, adr: u32, uid: Option<u32>, funk_anz: usize);
+  /// * power - true wenn Power ein, ein allfällig notwendiges Telegramm (z.B. MFX Schienenadr. Zuordung)
+  ///           wird zum sofort senden zurückgegeben.
+  ///           false wenn Power aus, nie direkte Ausgabe notwendiges Init Telegramm, dieses muss vor nächstem
+  ///           GL Befehl ausgegeben werden.
+  fn init_gl(&mut self, adr: u32, uid: Option<u32>, funk_anz: usize, power: bool)
+    -> Option<DdlTel>;
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> u32;
   /// Wieviele Speedsteps werden vom Protokoll unterstützt

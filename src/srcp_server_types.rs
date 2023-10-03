@@ -90,7 +90,7 @@ impl ToString for SRCPMessageDevice {
       SRCPMessageDevice::GA => "GA".to_string(),
       SRCPMessageDevice::GL => "GL".to_string(),
       SRCPMessageDevice::FB => "FB".to_string(),
-      SRCPMessageDevice::SM => "GA".to_string(),
+      SRCPMessageDevice::SM => "SM".to_string(),
       SRCPMessageDevice::Power => "POWER".to_string(),
     }
   }

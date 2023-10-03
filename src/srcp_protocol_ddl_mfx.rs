@@ -544,12 +544,12 @@ impl MfxProtokoll {
         self.search_new_dekoder_uid = 0;
         self.search_new_dekoder_bits = 0;
       } else {
-        // mit nächstem Bit weiter suchen
-        self.search_new_dekoder_bits += 1;
         info!(
-          "MFX Dekodersuche UID Bit gefunden. Bit {} UID {}",
+          "MFX Dekodersuche UID Bit gefunden. Anzahl Bits gefunden {} UID {}",
           self.search_new_dekoder_bits, self.search_new_dekoder_uid
         );
+        // mit nächstem Bit weiter suchen
+        self.search_new_dekoder_bits += 1;
       }
     } else {
       //Wenn die Suche einen Dekoder gefunden hat und das aktuelle Bit 0 war, dann kann nun noch mit 1 probiert werden
@@ -584,7 +584,8 @@ impl MfxProtokoll {
     //B=2 Bit Anzahl Bytes 00=1, 01=2, 10=4, 11=8 (Beim Schreiben unterstützen Dekoder aber nur ein Byte, hier ist jedoch alles implementiert)
     //D=8(bis 64) Bit Daten zum Schreiben
     //C=Checksumme
-    let mut ddl_tel = self.get_gl_new_tel(tel.adr, false); //Refresh->nur einmaliges Senden
+    let mut ddl_tel = self.get_gl_new_tel(tel.adr, true); //Refresh->nur einmaliges Senden
+    self.add_start_sync(&mut ddl_tel);
     let mut crc = self.add_adr(tel.adr, &mut ddl_tel);
     self.add_bits(
       match tel.mfx_cv_type {
@@ -610,8 +611,8 @@ impl MfxProtokoll {
       //Bitfolge "0011"
       //23 Takte 25us alle 912us
       //(3+AnzBits+8+4)*2 Takte 25us alle 456us (3 Bit Startkennung, Daten, 8 Bit Checksumme, 4 zusätzlich am Ende)
-      //2 Sync
-      for _ in [0..11] {
+      //2 Sync (eigentlich reicht einer, mit 2 ist sicher beim ersten auch die abschliessende Flanke vorhanden)
+      for _ in 0..11 {
         self.add_sync(&mut ddl_tel, false);
       }
       //Pause geht mit 0 weiter, sollte also hier mit 1 aufhören um letzte Flanke zu haben
@@ -622,12 +623,12 @@ impl MfxProtokoll {
       //Bitfolge 0011
       self.add_bits((0b0011, 4), &mut ddl_tel, &mut crc);
       //23 Takte 25us alle 912us
-      //Ab hier wird mit einzelnen Bits gearbeitet um das verlangte Timing möglichts genau einzuhalten
+      //Ab hier wird mit einzelnen Bits gearbeitet um das verlangte Timing möglichst genau einzuhalten
       //MSB wird zuerst ausgegeben
       let daten = ddl_tel.daten.last_mut().unwrap();
       //Anzahl Bits die im letzten Bytes noch frei sind
       let mut anz_bit_frei: usize = 0;
-      for _ in [0..23] {
+      for _ in 0..23 {
         //Pause mit Ruhepegel
         self.add_single_bits(
           daten,
@@ -639,7 +640,7 @@ impl MfxProtokoll {
         self.add_single_bits(daten, &mut anz_bit_frei, BITS_PER_RDSSYNC_IMP, true);
       }
       //(3+AnzBits+8+4)*2 Takte 25us alle 456us
-      for _ in [0..(3 + byte_count + 8 + 4) * 2] {
+      for _ in 0..(3 + byte_count * 8 + 8 + 4) * 2 {
         //Pause mit Ruhepegel
         self.add_single_bits(daten, &mut anz_bit_frei, BITS_PER_RDSSYNC_PAUSE_HALF, false);
         //Pause ist da, nun der Impuls
@@ -692,17 +693,33 @@ impl DdlProtokoll for MfxProtokoll {
     true
   }
   /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
+  /// Liefert, wenn "power" ein allfällg notwendiges Init-Telegramm (z.B. MFX SID Zurordnung) zurück.
   /// # Arguments
   /// * adr - Adresse der Lok
-  /// * uid - UID des Dekoders, muss hier immer vorhanden sein!
+  /// * uid - UID des Dekoders, wenn vorhanden
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
-  fn init_gl(&mut self, adr: u32, uid: Option<u32>, funk_anz: usize) {
+  /// * power - true wenn Power ein, ein allfällig notwendiges Telegramm (z.B. MFX Schienenadr. Zuordung)
+  ///           wird zum sofort senden zurückgegeben.
+  ///           false wenn Power aus, nie direkte Ausgabe notwendiges Init Telegramm, dieses muss vor nächstem
+  ///           GL Befehl ausgegeben werden.
+  fn init_gl(
+    &mut self, adr: u32, uid: Option<u32>, funk_anz: usize, power: bool,
+  ) -> Option<DdlTel> {
     self.uid[adr as usize] = uid.unwrap();
     self.funk_anz[adr as usize] = funk_anz;
     //Merken, dass vor nächstem Lokbefehl noch neue Schienenadr. Zuordnung gesendet werden muss.
     //Wird nicht hier direkt gemacht, da Init auch bei Booster Stop ausgeführt wird.
     self.new_sid[adr as usize] = true;
+    if power {
+      //SID Zuordnungstelegramm kann gleich ausgegeben werden
+      let mut ddl_tel = self.get_gl_new_tel(adr, false);
+      //Nur SID Telegramm ist relevant, kein weiteres notwendig
+      ddl_tel.daten.truncate(1);
+      Some(ddl_tel)
+    } else {
+      None
+    }
   }
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> u32 {
@@ -984,21 +1001,28 @@ impl DdlProtokoll for MfxProtokoll {
           //Antwort vorhanden
           if init_parameter.is_some() {
             //Auslesen hat funktioniert
+            info!("MFX Start read GL Parameter fertig Adr={}", adr);
             result = ResultReadGlParameter::Ok(init_parameter.unwrap());
             //Fertig
             self.read_gl_parameter = None;
           } else {
             //Fehler, Abbruch
+            warn!("MFX Error read GL Parameter Adr={}", adr);
             result = ResultReadGlParameter::Error;
             self.read_gl_parameter = None;
           }
         }
       } else {
         //Auslesen im Gange, es kann nicht gleichzeitig eine andere Adresse ausgelesen werden
+        warn!(
+          "MFX Error read GL Parameter Adr={} aber bereits Adr={} in arbeit",
+          adr, adr_read_gl_parameter
+        );
         result = ResultReadGlParameter::Error;
       }
     } else {
       //Auslesen Lokparameter starten
+      info!("MFX Start read GL Parameter Adr={}", adr);
       self.read_gl_parameter = Some(adr);
       self
         .tx_to_rds

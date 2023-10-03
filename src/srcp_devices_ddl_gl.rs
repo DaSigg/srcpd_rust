@@ -328,7 +328,7 @@ impl DdlGL<'_> {
   /// * speedsteps - Anzahl Speedsteps mit denen die GL initialisiert ist
   /// * number_functions - Anzahl verwendete Funktionen
   /// * uid - Dekoder UID wenn vorhanden
-  /// * param - Optionale, Protokollabhängige Paramater (z.B. MFX UID, Name, Funktionen)
+  /// * param - Optionale, Protokollabhängige Paramater (z.B. MFX Name, Funktionen)
   fn register_new_gl(
     &mut self, adr: u32, protokoll: &DdlProtokolle, protokoll_version: &str, speedsteps: usize,
     number_functions: usize, uid: Option<u32>, param: &Vec<String>,
@@ -359,6 +359,9 @@ impl DdlGL<'_> {
     parameter.push(new_gl.protokoll_version.to_string());
     parameter.push(new_gl.protokoll_speedsteps.to_string());
     parameter.push(new_gl.protokoll_number_functions.to_string());
+    if let Some(uid) = new_gl.protokoll_uid {
+      parameter.push(uid.to_string());
+    }
     parameter.extend(new_gl.param.clone());
 
     self
@@ -367,7 +370,7 @@ impl DdlGL<'_> {
         None,
         self.bus,
         SRCPMessageID::Info {
-          info_code: "100".to_string(),
+          info_code: "101".to_string(),
         },
         SRCPMessageDevice::GL,
         parameter,
@@ -577,7 +580,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           if protokoll.uid() {
             uid = Some(cmd_msg.parameter[5].parse::<u32>().unwrap());
           }
-          protokoll.init_gl(adr, uid, protokoll_number_functions);
+          protokoll.init_gl(adr, uid, protokoll_number_functions, false); //Annahme Power Off, eventuell notwendiges Init-Tel kommt mit nächstem GL Tel.
         }
 
         let new_gl = self
@@ -720,13 +723,14 @@ impl SRCPDeviceDDL for DdlGL<'_> {
   fn execute(&mut self, power: bool) {
     //Ohne Power macht es auch keinen Sinn Telegramme zu senden
     if power {
-      for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
-        for (_version, prot_impl) in prot_versionen {
+      'protLoop: for (protokoll, prot_versionen) in &self.all_protokolle.clone() {
+        for (version, prot_impl) in prot_versionen {
           let mut p = prot_impl.borrow_mut();
           if let Some(tel) = p.get_protokoll_telegrammme().as_mut() {
             self.send_tel(tel);
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
             if let Some(daten_rx) = &tel.daten_rx {
+              //Wenn bereits eine Neuanmeldung einer GL läuft, keine weitere Neuanmeldung parallel
               if let Some(uid) = p.eval_neu_anmeldung(daten_rx) {
                 //Noch nicht angemeldeter Dekoder gefunden.
                 //Wenn es die GL mit dieser UID schon gibt, dann wird dessen Adressen verwendet.
@@ -737,7 +741,11 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                       //Lok gibt es bereits, neue SID Zuordnung auslösen
                       info!("GL: bekannte Lok gefunden UID={}, Adr={}", uid, adr);
                       //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
-                      p.init_gl(adr, gl.protokoll_uid, gl.protokoll_number_functions);
+                      if let Some(mut ddl_tel) =
+                        p.init_gl(adr, gl.protokoll_uid, gl.protokoll_number_functions, power)
+                      {
+                        self.send_tel(&mut ddl_tel);
+                      }
                       gl_bekannt = true;
                       break;
                     }
@@ -751,19 +759,29 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                       //Es werden mal die im Basistel. enthalten Funktionen als vorhanden angenommen (bei MFX 16).
                       let anz_f = p.get_gl_anz_f_basis();
                       //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
-                      p.init_gl(adr, Some(uid), anz_f);
+                      if let Some(mut ddl_tel) = p.init_gl(adr, Some(uid), anz_f, power) {
+                        self.send_tel(&mut ddl_tel);
+                      }
+                      //GL mal anmelden, jeweils max. vom Protokoll unterstützte Parameter verwenden
+                      self.register_new_gl(
+                        adr,
+                        &protokoll,
+                        version,
+                        p.get_gl_max_speed_steps(),
+                        p.get_gl_anz_f(),
+                        Some(uid),
+                        &Vec::new(), //Noch keine weiteren Parameter bekannt.
+                      );
                       //Neue GL ist mal angemeldet, kann prinzipiell verwendet werden.
                       //Bevor sie über SRCP INFO gemeldet wird, wird noch versucht optionale Parameter auszulesen.
                       self.gl_param_read = Some(adr);
-                      break;
+                      break 'protLoop; //Keine weitere parallel Anmeldung
                     }
                   }
                 }
               }
             }
           }
-          //Wenn Antworten von SM Read/Write vorliegen, dann diese über srcp Session zurücksenden
-          todo!()
         }
       }
       //Optionale GL Parameter für automatisch neu angemeldete GL's lesen
