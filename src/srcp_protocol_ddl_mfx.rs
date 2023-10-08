@@ -224,7 +224,7 @@ impl MfxProtokoll {
       mpsc::channel();
     //RDS Einlesethread starten
     thread::Builder::new()
-      .name("RDS Feedbackthread".to_string())
+      .name("MFX RDS Feedbackthread".to_string())
       .spawn(move || {
         MfxRdsFeedbackThread::new(
           rx_in_rds,
@@ -1065,7 +1065,7 @@ impl DdlProtokoll for MfxProtokoll {
   }
   /// Liefert die Antwort sm_read_write zurück.
   /// None wenn keine Antwort verfügbar.
-  fn sm_get_answer(&self) -> Option<SmReadWrite> {
+  fn sm_get_answer(&mut self) -> Option<SmReadWrite> {
     self.rx_from_rds_read_write_ca.try_recv().ok()
   }
 }

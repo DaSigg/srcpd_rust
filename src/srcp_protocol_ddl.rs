@@ -211,6 +211,12 @@ pub trait DdlProtokoll {
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
   fn get_idle_tel(&mut self) -> Option<DdlTel>;
+  /// Liefert das Idle Telegramm dieses Protokolles bei Power Off
+  /// Return None wenn kein Idle Telegramm für Power Off vorhanden ist
+  /// Wird für DCC Programmiergleis benutzt, senden Rücksetzpaket. Ausgabe erfolgt nur bei Power Off.
+  fn get_idle_tel_power_off(&self) -> Option<DdlTel> {
+    None
+  }
   /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
   fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
@@ -246,7 +252,7 @@ pub trait DdlProtokoll {
   fn sm_read_write(&mut self, _sm_para: &SmReadWrite) {}
   /// Liefert die Antwort sm_read_write zurück.
   /// None wenn keine Antwort verfügbar.
-  fn sm_get_answer(&self) -> Option<SmReadWrite> {
+  fn sm_get_answer(&mut self) -> Option<SmReadWrite> {
     None
   }
   /// Liefert alle in "sm_read" und "sm_write" unterstützten Typen mit der Anzahl erwarteter Parameter
@@ -257,11 +263,22 @@ pub trait DdlProtokoll {
   }
 }
 
-/// Parameter für SM Read/Write
+/// Type für "SmReadWrite"
+#[derive(Clone, Debug)]
+pub enum SmReadWriteType {
+  Read,
+  Write(u32),    //Value
+  Verify(u32),   //Value (Byte oder Bit gemäss sm_type)
+  ResultOk(u32), //Ergebnis Read, Write, Verify OK mit Value
+  ResultErr,     //Ergebnis Read, Write, Verify Fail
+}
+/// Parameter für SM Read/Write/Verify
 #[derive(Clone, Debug)]
 pub struct SmReadWrite {
   /// Lokadresse
   pub adr: u32,
+  /// Falls das Protokoll eine Prog. Gleis unterstützt und dieses verwendet werden soll
+  pub prog_gleis: bool,
   /// Type des SM Zugriffes gemäss srcp Protokoll
   pub sm_type: String,
   /// Alle notwendigen Parameter
@@ -269,7 +286,7 @@ pub struct SmReadWrite {
   /// Value.
   /// Als Befehl: None bei Read-Befehl, mit Value für Write.
   /// Als Rückmeldung: None bei Fehler, mit Value für erfolgreichen Read/Write
-  pub val: Option<u32>,
+  pub val: SmReadWriteType,
   /// Session ID von der das Kommando kam um eine Antwort an diese zu senden.
   pub session_id: u32,
 }

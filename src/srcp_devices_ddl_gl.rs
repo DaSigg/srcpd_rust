@@ -11,7 +11,8 @@ use spidev::Spidev;
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
   srcp_protocol_ddl::{
-    DdlProtokolle, DdlTel, GLDriveMode, HashMapProtokollVersion, ResultReadGlParameter,
+    DdlProtokoll, DdlProtokolle, DdlTel, GLDriveMode, HashMapProtokollVersion,
+    ResultReadGlParameter,
   },
   srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType},
 };
@@ -537,6 +538,17 @@ impl SRCPDeviceDDL for DdlGL<'_> {
             }
           }
         }
+        SRCPMessageType::VERIFY => {
+          //Verify wird für GL's nicht unterstützt
+          self
+            .tx
+            .send(SRCPMessage::new_err(
+              cmd_msg,
+              "423",
+              "unsupported operation",
+            ))
+            .unwrap();
+        }
       };
     }
     result
@@ -546,7 +558,8 @@ impl SRCPDeviceDDL for DdlGL<'_> {
   /// Das Kommando muss gültig sein (validate_cmd), es wird hier nicht mehr überprüft.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
-  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage) {
+  /// * power - true wenn Power eingeschaltet, Booster On sind, hier nicht verwendet
+  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage, _power: bool) {
     let SRCPMessageID::Command { msg_type } = cmd_msg.message_id else {return};
     match msg_type {
       SRCPMessageType::INIT => {
@@ -661,6 +674,9 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           //OK an diese Session wurde bei Validate bereits gesendet da SET ohne POWER zuerst in Queue kommt.
         }
       }
+      SRCPMessageType::VERIFY => {
+        //Verify wird für GL's nicht unterstützt, wurde bei Validate bereits abgelehnt
+      }
     };
   }
 
@@ -715,18 +731,21 @@ impl SRCPDeviceDDL for DdlGL<'_> {
   }
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
+  /// Liefert true zurück, wenn durch den Aufruf min. ein DDL Telegramm gesendet wurde, sonst false.
   /// Wird hier verwendet um allen vorhandenen Protokollen die Möglichkeit zu geben
   /// ihr periodische Aufgaben / Telegramme auszuführen.
   /// # Arguments
   /// * power - true: Power / Booster ist ein, Strom auf den Schienen
   ///           false: Power / Booster ist aus
-  fn execute(&mut self, power: bool) {
+  fn execute(&mut self, power: bool) -> bool {
+    let mut tel_gesendet = false;
     //Ohne Power macht es auch keinen Sinn Telegramme zu senden
     if power {
       'protLoop: for (protokoll, prot_versionen) in &self.all_protokolle.clone() {
         for (version, prot_impl) in prot_versionen {
-          let mut p = prot_impl.borrow_mut();
+          let mut p: std::cell::RefMut<'_, dyn DdlProtokoll> = prot_impl.borrow_mut();
           if let Some(tel) = p.get_protokoll_telegrammme().as_mut() {
+            tel_gesendet = true;
             self.send_tel(tel);
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
             if let Some(daten_rx) = &tel.daten_rx {
@@ -825,6 +844,18 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           self.srcp_info_new_gl(adr, &gl);
         }
       }
+    } else {
+      //Power Off Idle Telegramm senden wenn vorhanden
+      for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
+        for (_version, prot_impl) in prot_versionen {
+          let p: std::cell::RefMut<'_, dyn DdlProtokoll> = prot_impl.borrow_mut();
+          if let Some(tel) = p.get_idle_tel_power_off().as_mut() {
+            tel_gesendet = true;
+            self.send_tel(tel);
+          }
+        }
+      }
     }
+    tel_gesendet
   }
 }

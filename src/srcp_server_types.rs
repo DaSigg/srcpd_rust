@@ -9,6 +9,7 @@ use std::{
 pub enum SRCPMessageType {
   GET,
   SET,
+  VERIFY,
   INIT,
   TERM,
 }
@@ -17,6 +18,7 @@ impl ToString for SRCPMessageType {
     match &self {
       SRCPMessageType::GET => "GET",
       SRCPMessageType::SET => "SET",
+      SRCPMessageType::VERIFY => "VERIFY",
       SRCPMessageType::INIT => "INIT",
       SRCPMessageType::TERM => "TERM",
     }
@@ -170,6 +172,7 @@ impl SRCPMessage {
         msg_type: match cmd[0] {
           "GET" => SRCPMessageType::GET,
           "SET" => SRCPMessageType::SET,
+          "VERIFY" => SRCPMessageType::VERIFY,
           "INIT" => SRCPMessageType::INIT,
           "TERM" => SRCPMessageType::TERM,
           &_ => return Err(("410", "unknown command")),

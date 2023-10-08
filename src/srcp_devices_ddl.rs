@@ -17,15 +17,19 @@ pub trait SRCPDeviceDDL {
   /// Das Kommando muss gültig sein (validate_cmd), es wird hier nicht mehr überprüft.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
-  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage);
+  /// * power - true wenn Power eingeschaltet, Booster On sind
+  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage, power: bool);
   /// Refresh Zyklus Telegramm senden (wird nur für GL aufgerufen)
   fn send_refresh(&mut self) {}
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
+  /// Liefert true zurück, wenn durch den Aufruf min. ein DDL Telegramm gesendet wurde, sonst false.
   /// # Arguments
   /// * power - true: Power / Booster ist ein, Strom auf den Schienen
   ///           false: Power / Booster ist aus
-  fn execute(&mut self, _power: bool) {}
+  fn execute(&mut self, _power: bool) -> bool {
+    false
+  }
   /// Alle internen zustände als Info Message versenden
   /// # Arguments
   /// * session_id - SRCOP Client Session ID an die die Zustände gesendet werden sollen.

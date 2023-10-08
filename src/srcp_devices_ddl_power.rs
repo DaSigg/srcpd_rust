@@ -201,7 +201,8 @@ impl SRCPDeviceDDL for DdlPower {
   /// Das Kommando muss gültig sein (validate_cmd), es wird hier nicht mehr überprüft.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
-  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage) {
+  /// * power - true wenn Power eingeschaltet, Booster On sind, hier nicht verwendet
+  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage, _power: bool) {
     //Nur das SET Kommando muss hier ausgeführt werden
     match &cmd_msg.message_id {
       SRCPMessageID::Command { msg_type } => {
@@ -246,11 +247,12 @@ impl SRCPDeviceDDL for DdlPower {
   /// Hintergrundaktivität:
   /// - Ausschalten Start- Stopimpulse zu Booster wenn siggmode
   /// - Kontrolle Boosterrückmeldung On/Off (Shortcut)
+  /// Liefert immer false zurück, es wird hier nie ein Telegramm gesendet.
   /// # Arguments
   /// * power - true: Power / Booster ist ein, Strom auf den Schienen
   ///           false: Power / Booster ist aus
   ///           -> wird hier nicht verwendet, wir sind ja im DDL Device "Power"
-  fn execute(&mut self, _power: bool) {
+  fn execute(&mut self, _power: bool) -> bool {
     if self.siggmode {
       //Wenn Start- Stop Impuls vorbei sind
       if Instant::now() > self.impuls_aus {
@@ -288,5 +290,6 @@ impl SRCPDeviceDDL for DdlPower {
         }
       }
     }
+    false
   }
 }

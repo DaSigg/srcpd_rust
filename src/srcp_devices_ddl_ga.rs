@@ -283,6 +283,17 @@ impl SRCPDeviceDDL for DdlGA<'_> {
             }
           }
         }
+        SRCPMessageType::VERIFY => {
+          //Verify wird für GA's nicht unterstützt
+          self
+            .tx
+            .send(SRCPMessage::new_err(
+              cmd_msg,
+              "423",
+              "unsupported operation",
+            ))
+            .unwrap();
+        }
       };
     }
     result
@@ -292,7 +303,8 @@ impl SRCPDeviceDDL for DdlGA<'_> {
   /// Das Kommando muss gültig sein (validate_cmd), es wird hier nicht mehr überprüft.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
-  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage) {
+  /// * power - true wenn Power eingeschaltet, Booster On sind
+  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage, _power: bool) {
     let SRCPMessageID::Command { msg_type } = cmd_msg.message_id else {return};
     match msg_type {
       SRCPMessageType::INIT => {
@@ -350,7 +362,10 @@ impl SRCPDeviceDDL for DdlGA<'_> {
           }
         }
       }
-    };
+      SRCPMessageType::VERIFY => {
+        //Verify wird für GA's nicht unterstützt, wurde bei Validate bereits abgelehnt
+      }
+    }
   }
 
   /// Alle internen zustände als Info Message versenden
@@ -369,11 +384,13 @@ impl SRCPDeviceDDL for DdlGA<'_> {
 
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
+  /// Liefert true zurück, wenn durch den Aufruf min. ein DDL Telegramm gesendet wurde, sonst false.
   /// Hier wird das automatische Ausschalten von GA Outputs nach Delay Zeit ausgeführt
   /// # Arguments
   /// * power - true: Power / Booster ist ein, Strom auf den Schienen
   ///           false: Power / Booster ist aus
-  fn execute(&mut self, power: bool) {
+  fn execute(&mut self, power: bool) -> bool {
+    let mut tel_gesendet = false;
     //Ausschaltkommando senden macht nur Sinn, wenn Power vorhanden ist
     if power {
       let mut i = 0;
@@ -381,6 +398,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         let ga_auto_off = &self.all_ga_auto_off[i];
         if Instant::now() > ga_auto_off.off_zeit {
           //Auto off
+          tel_gesendet = true;
           self.send_ga(ga_auto_off.adr, ga_auto_off.port, false);
           self.all_ga_auto_off.remove(i);
         } else {
@@ -388,5 +406,6 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         }
       }
     }
+    tel_gesendet
   }
 }

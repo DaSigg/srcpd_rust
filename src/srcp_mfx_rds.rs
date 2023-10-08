@@ -8,7 +8,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use crate::srcp_protocol_ddl::SmReadWrite;
+use crate::srcp_protocol_ddl::{SmReadWrite, SmReadWriteType};
 
 /// Input RDS Qual Signal GPIO 23 (= Pin 16)
 const GPIO_MFX_RDS_QAL: u16 = 23;
@@ -264,13 +264,13 @@ pub struct MfxCvTel {
   pub index: u8,
 }
 
-/// Thread zum Einlesen der MFX RDS Rückmeldungen.
+/// Thread zur Ausführung MFX Dekoder Prog. Read/Write Befehlen inkl. Rückmeldungen über RDS.
 /// Abarbeitung der Aufträge.
 /// - Aufträge werden empfangen aus DDL Thread, MFX Protokoll
 /// - Notwendige Telegramme werden zurück an DDL Thread, MFX Protokoll gesandt, da die
 ///   SPI Ausgabe von da aus geschehen muss.
 /// - Antworten werden zurück gesendet.
-///   Es erfolgt immer eine Antwort auf eine Anfrage, im Fehlerfalle "None".
+///   Es erfolgt immer eine Antwort auf eine Anfrage, im Fehlerfalle "Error".
 pub struct MfxRdsFeedbackThread {
   /// GPIO's zum Einlesen RDS Rückmeldung
   gpio_mfx_rds_qal: SysFsGpioInput,
@@ -869,24 +869,37 @@ impl MfxRdsFeedbackThread {
           let ca_index = ca_parameter.para[2] as u8;
           let index = ca_parameter.para[3] as u8;
           if let Some(cv) = self.find_ca(ca_parameter.adr, block, ca, ca_index) {
-            if let Some(val) = ca_parameter.val {
-              //Write
-              self.write_cv(ca_parameter.adr, cv, index, &vec![val as u8]);
-            } else {
-              //Read
-              if let Some(val) = self.read_cv(ca_parameter.adr, cv, index, MfxCvTelBytes::Cc1byte) {
-                //Alles OK, gelesener Wert als Antwort zurück senden
-                ca_parameter.val = Some(val[0] as u32);
-              } else {
+            match ca_parameter.val {
+              SmReadWriteType::Read => {
+                //Read
+                if let Some(val) = self.read_cv(ca_parameter.adr, cv, index, MfxCvTelBytes::Cc1byte)
+                {
+                  //Alles OK, gelesener Wert als Antwort zurück senden
+                  ca_parameter.val = SmReadWriteType::ResultOk(val[0] as u32);
+                } else {
+                  warn!(
+                    "MFX Error ReadCA read_cv {}.{} für SID={}",
+                    cv, index, ca_parameter.adr
+                  );
+                  ca_parameter.val = SmReadWriteType::ResultErr;
+                }
+              }
+              SmReadWriteType::Write(val) => {
+                //Write
+                self.write_cv(ca_parameter.adr, cv, index, &vec![val as u8]);
+              }
+              _ => {
+                //Keine Aktion für Verify, VerifyBit (wird hier nicht unterstützt) und Results
                 warn!(
-                  "MFX Error ReadCA read_cv {}.{} für SID={}",
-                  cv, index, ca_parameter.adr
+                  "MFX Error nicht unterstützter Kommandotype {:?}",
+                  ca_parameter.val
                 );
+                ca_parameter.val = SmReadWriteType::ResultErr;
               }
             }
           } else {
             warn!("MFX Error ReadCA findCA {:?}", ca_parameter,);
-            ca_parameter.val = None;
+            ca_parameter.val = SmReadWriteType::ResultErr;
           }
           //Antwort zurück senden, OK wenn ca_parameter.val vorhanden, sonst Error
           self.tx.send(ca_parameter).unwrap();

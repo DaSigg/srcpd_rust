@@ -23,6 +23,7 @@ use std::{
 use crate::{srcp_server_ddl::DDL, srcp_server_s88::S88, srcp_server_types::Message};
 
 mod srcp;
+mod srcp_dcc_prog;
 mod srcp_devices_ddl;
 mod srcp_devices_ddl_ga;
 mod srcp_devices_ddl_gl;

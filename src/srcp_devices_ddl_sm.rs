@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::mpsc::Sender};
 
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
-  srcp_protocol_ddl::{DdlProtokolle, HashMapProtokollVersion, SmReadWrite},
+  srcp_protocol_ddl::{DdlProtokolle, HashMapProtokollVersion, SmReadWrite, SmReadWriteType},
   srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType},
 };
 
@@ -56,7 +56,7 @@ impl SRCPDeviceDDL for DdlSM {
   /// * cmd_msg - Empfangenes Kommando
   fn validate_cmd(&self, cmd_msg: &SRCPMessage) -> bool {
     let mut result = false;
-    //Für GA wird unterstützt: INIT, TERM, SET, GET
+    //Für SM wird unterstützt: INIT, TERM, SET, GET
     if let SRCPMessageID::Command { msg_type } = cmd_msg.message_id {
       match msg_type {
         SRCPMessageType::INIT => {
@@ -107,11 +107,11 @@ impl SRCPDeviceDDL for DdlSM {
               .unwrap();
           }
         }
-        SRCPMessageType::SET | SRCPMessageType::GET => {
+        SRCPMessageType::SET | SRCPMessageType::GET | SRCPMessageType::VERIFY => {
           //Format ist SET <bus> SM <decoderaddress> <type> <values ...> <set value>
-          //<type> ist Protokollabhängig (z.B. bei NMRA CV, CVBIT, REG, PAGE, bei MFX CAMFX)
+          //<type> ist Protokollabhängig (z.B. bei NMRA CV, CVBIT, bei MFX CAMFX)
           //Anzahl weitere Parameter ist auch Protokollabhängig (z.B. NMRA CV: CV, Value, bei MFX CAMFX Block, CA, CAIndex, Index, Value)
-          //<set value> nur bei SET, nicht bei GET
+          //<set value> nur bei SET und VERIFY, nicht bei GET
           //Es muss ein Protokoll mit INIT für SM ausgewählt worden sein
           if let Some((prot, prot_ver)) = &self.sm_protokoll {
             if cmd_msg.parameter.len() > 2 {
@@ -128,10 +128,10 @@ impl SRCPDeviceDDL for DdlSM {
                 if cmd_msg.parameter.len()
                   == (2 //2+ ist Dekoderadr und Type
                     + para_count
-                    + (if msg_type == SRCPMessageType::SET {
-                      1 //Bei SET braucht es noch den Value Wert zusätzlich
-                    } else {
+                    + (if msg_type == SRCPMessageType::GET {
                       0
+                    } else {
+                      1 //Bei SET und VERIFY braucht es noch den Value Wert zusätzlich
                     }))
                 {
                   //Alles ausser Type müssen eine Zahl sein
@@ -184,7 +184,8 @@ impl SRCPDeviceDDL for DdlSM {
   /// Das Kommando muss gültig sein (validate_cmd), es wird hier nicht mehr überprüft.
   /// # Arguments
   /// * cmd_msg - Empfangenes Kommando
-  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage) {
+  /// * power - true wenn Power eingeschaltet, Booster On sind
+  fn execute_cmd(&mut self, cmd_msg: &SRCPMessage, power: bool) {
     let SRCPMessageID::Command { msg_type } = cmd_msg.message_id else {return};
     match msg_type {
       SRCPMessageType::INIT => {
@@ -228,13 +229,14 @@ impl SRCPDeviceDDL for DdlSM {
         let protokoll = &self.all_protokolle[prot][prot_ver.as_str()];
         protokoll.borrow_mut().sm_read_write(&SmReadWrite {
           adr: cmd_msg.get_adr().unwrap(),
+          prog_gleis: !power, //Prog.Gleismodus wenn Power aus
           sm_type: cmd_msg.parameter[1].clone(),
           para: param,
-          val: None,
+          val: SmReadWriteType::Read,
           session_id: cmd_msg.session_id.unwrap(),
         });
       }
-      SRCPMessageType::SET => {
+      SRCPMessageType::SET | SRCPMessageType::VERIFY => {
         //Alle (nach Type bis Schluss - 1) notwendigen Parameter zu Vec<u32> konvertieren.
         let mut param: Vec<u32> = Vec::new();
         for p_str in &cmd_msg.parameter[2..cmd_msg.parameter.len() - 1] {
@@ -247,9 +249,14 @@ impl SRCPDeviceDDL for DdlSM {
         let protokoll = &self.all_protokolle[prot][prot_ver.as_str()];
         protokoll.borrow_mut().sm_read_write(&SmReadWrite {
           adr: cmd_msg.get_adr().unwrap(),
+          prog_gleis: !power, //Prog.Gleismodus wenn Power aus
           sm_type: cmd_msg.parameter[1].clone(),
           para: param,
-          val: Some(value),
+          val: if msg_type == SRCPMessageType::SET {
+            SmReadWriteType::Write(value)
+          } else {
+            SmReadWriteType::Verify(value)
+          },
           session_id: cmd_msg.session_id.unwrap(),
         });
       }
@@ -265,11 +272,12 @@ impl SRCPDeviceDDL for DdlSM {
   }
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
   /// von neuen Kommando oder refresh unabhängigen Aufgaben.
+  /// Liefert immer false, es wurde hier nie ein DDL Tel. versendet.
   /// Hier: Wenn vorhanden SM Info-Antwort Messages als srcp Message zurück senden
   /// # Arguments
   /// * power - true: Power / Booster ist ein, Strom auf den Schienen
   ///           false: Power / Booster ist aus
-  fn execute(&mut self, _power: bool) {
+  fn execute(&mut self, _power: bool) -> bool {
     for (_, prot_familie) in &self.all_protokolle {
       for (_, prot) in prot_familie {
         if let Some(ans) = prot.borrow_mut().sm_get_answer() {
@@ -280,9 +288,9 @@ impl SRCPDeviceDDL for DdlSM {
           for p in ans.para {
             srcp_para.push(p.to_string());
           }
-          let srcp_message = if ans.val.is_some() {
+          let srcp_message = if let SmReadWriteType::ResultOk(val) = ans.val {
             //OK Message
-            srcp_para.push(ans.val.unwrap().to_string());
+            srcp_para.push(val.to_string());
             SRCPMessage {
               session_id: Some(ans.session_id),
               bus: self.bus,
@@ -310,5 +318,6 @@ impl SRCPDeviceDDL for DdlSM {
         }
       }
     }
+    false
   }
 }

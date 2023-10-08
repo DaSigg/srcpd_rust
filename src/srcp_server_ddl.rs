@@ -248,6 +248,10 @@ impl DDL {
     //Alle unterstützten Devices
     let all_devices = self.get_all_devices(&tx);
     loop {
+      //Power Device muss vorhanden sein, is_dev_spezifisch() liefert den Power Zustand
+      let power_on = all_devices[&SRCPMessageDevice::Power]
+        .borrow()
+        .is_dev_spezifisch();
       //Immer alle ankommenden Kommandos auslesen
       loop {
         if let Ok(msg) = rx.try_recv() {
@@ -265,14 +269,18 @@ impl DDL {
                   //Nur Kommandomessages können (oder sollen) hier ankommen
                   Some(device) => {
                     if device.borrow().validate_cmd(&srcp_message) {
-                      //SET Kommandos (ausser für Power Device) kommen in die Warteschlange da sie
+                      //SET Kommandos (ausser für Power Device und SM) kommen in die Warteschlange da sie
                       //1. nur bei Power On ausgegeben werden
                       //2. Lok Kommandos für die selbe Lok überholen sich, sprich wenn ein neues empfangen wurde ist
                       //   ein altes, noch nicht ausgegebenes, für diese Lok immer hinfällig
                       if (srcp_message.device == SRCPMessageDevice::Power)
+                        || (srcp_message.device == SRCPMessageDevice::SM)
                         || (msg_type != SRCPMessageType::SET)
                       {
-                        device.try_borrow_mut().unwrap().execute_cmd(&srcp_message);
+                        device
+                          .try_borrow_mut()
+                          .unwrap()
+                          .execute_cmd(&srcp_message, power_on);
                       } else {
                         //Wenn es ein Lokkommando ist, dann ist altes Kommando für dieselbe Lok hinfällig
                         if srcp_message.device == SRCPMessageDevice::GL {
@@ -312,25 +320,24 @@ impl DDL {
         }
       }
       //Wenn Power eingeschaltet ist, dann wird die Queue abgearbeitet
-      //Power Device muss vorhanden sein, is_dev_spezifisch() liefert den Power Zustand
-      let power_on = all_devices[&SRCPMessageDevice::Power]
-        .borrow()
-        .is_dev_spezifisch();
       if power_on {
         //Wenn Watchdog verlangt ist, dann machen wir hier noch dessen Kontrolle und Power off, wenn abgelaufen
         if self.watchdog && (Instant::now() > (instant_kommando + WATCHDOG_TIMEOUT)) {
           //Ausschaltkommando, Session ID 0 = srcp Server selbst
           all_devices[&SRCPMessageDevice::Power]
             .borrow_mut()
-            .execute_cmd(&SRCPMessage::new(
-              Some(0),
-              self.busnr,
-              SRCPMessageID::Command {
-                msg_type: (SRCPMessageType::SET),
-              },
-              SRCPMessageDevice::Power,
-              vec!["OFF".to_string()],
-            ));
+            .execute_cmd(
+              &SRCPMessage::new(
+                Some(0),
+                self.busnr,
+                SRCPMessageID::Command {
+                  msg_type: (SRCPMessageType::SET),
+                },
+                SRCPMessageDevice::Power,
+                vec!["OFF".to_string()],
+              ),
+              power_on,
+            );
         } else {
           if queue.is_empty() {
             //Nicht zu tun -> Refresh für GL wenn vorhanden
@@ -346,19 +353,22 @@ impl DDL {
               .unwrap()
               .try_borrow_mut()
               .unwrap()
-              .execute_cmd(&msg);
+              .execute_cmd(&msg, power_on);
           }
         }
       }
-      //Wenn Power On ist wird dauernd etwas gesendet. Die CPU "Pausen" kommen durch das SPI senden zu stande.
-      //Wenn Power Off ist, wird nichts gesendet. Damit machen wir in diesem Loop 100% CPU Last für nichts.
-      //Deshalb der CPU etwas Pausen gönnen
-      if !power_on {
-        thread::sleep(POWER_OFF_CPU_PAUSE);
-      }
       //Allen Devices die Möglichkeit geben Hintergrundaufgaben abzuarbeiten, wenn vorhanden SM Antwort zurück senden
+      let mut tel_gesendet = false;
       for (_, dev) in &all_devices {
-        dev.borrow_mut().execute(power_on);
+        if dev.borrow_mut().execute(power_on) {
+          tel_gesendet = true;
+        }
+      }
+      if !power_on && !tel_gesendet {
+        //Wenn Power On ist wird dauernd etwas gesendet. Die CPU "Pausen" kommen durch das SPI senden zu stande.
+        //Wenn Power Off ist, wird (ausser SM verlangt etwas) nichts gesendet. Damit machen wir in diesem Loop 100% CPU Last für nichts.
+        //Deshalb der CPU etwas Pausen gönnen, fallse bei Power Off wircklich nichts gesendet wurde.
+        thread::sleep(POWER_OFF_CPU_PAUSE);
       }
     }
   }
