@@ -951,7 +951,16 @@ impl DdlProtokoll for MfxProtokoll {
   /// Zudem werden die CV Read/Write Telegramme erzeugt, wenn vom MFX RDS Thread verlangt.
   /// Vorrang hat CV Read/Write. Wenn das verlangt wird, dann wird nie Zentrale UID und Dekodersuche erzeugt.
   /// Das kann ein Zyklus später erfolgen falls gleichzeitig notwendig.
-  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
+  /// # Arguments
+  /// * power : true wenn Power (Booster) ein, sonst false.
+  ///           Normalerweise werden Telegramme nur bei Power On gesendet.
+  ///           Ausnahme: SM DCC auf Prog. Gleis.
+  ///           Hier: kein Prog. Gleis für MFX, alle Telegramme sind nur sinnvoll wenn Power On ist.
+  fn get_protokoll_telegrammme(&mut self, power: bool) -> Option<DdlTel> {
+    if !power {
+      //Bei Power Off gibt es hier nichts zu senden
+      return None;
+    }
     let mut result = None;
     let tel_from_rds = self.rx_tel_from_rds.try_recv();
     if let Ok(tel) = tel_from_rds {

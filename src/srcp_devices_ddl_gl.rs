@@ -744,7 +744,7 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       'protLoop: for (protokoll, prot_versionen) in &self.all_protokolle.clone() {
         for (version, prot_impl) in prot_versionen {
           let mut p: std::cell::RefMut<'_, dyn DdlProtokoll> = prot_impl.borrow_mut();
-          if let Some(tel) = p.get_protokoll_telegrammme().as_mut() {
+          if let Some(tel) = p.get_protokoll_telegrammme(power).as_mut() {
             tel_gesendet = true;
             self.send_tel(tel);
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
@@ -848,10 +848,17 @@ impl SRCPDeviceDDL for DdlGL<'_> {
       //Power Off Idle Telegramm senden wenn vorhanden
       for (_protokoll, prot_versionen) in &self.all_protokolle.clone() {
         for (_version, prot_impl) in prot_versionen {
-          let p: std::cell::RefMut<'_, dyn DdlProtokoll> = prot_impl.borrow_mut();
-          if let Some(tel) = p.get_idle_tel_power_off().as_mut() {
+          let mut p: std::cell::RefMut<'_, dyn DdlProtokoll> = prot_impl.borrow_mut();
+          //Den Protokollen die Chance geben Programmiergleis Telegramme zu senden
+          if let Some(tel) = p.get_protokoll_telegrammme(power).as_mut() {
             tel_gesendet = true;
             self.send_tel(tel);
+          } else {
+            //Idle Telegramme für Programmiergleis wenn SM aktiviert
+            if let Some(tel) = p.get_idle_tel_power_off().as_mut() {
+              tel_gesendet = true;
+              self.send_tel(tel);
+            }
           }
         }
       }

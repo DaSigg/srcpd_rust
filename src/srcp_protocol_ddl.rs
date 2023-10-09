@@ -219,7 +219,11 @@ pub trait DdlProtokoll {
   }
   /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
-  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
+  /// # Arguments
+  /// * power : true wenn Power (Booster) ein, sonst false.
+  ///           Normalerweise werden Telegramme nur bei Power On gesendet.
+  ///           Ausnahme: SM DCC auf Prog. Gleis.
+  fn get_protokoll_telegrammme(&mut self, _power: bool) -> Option<DdlTel> {
     None
   }
   /// Auswertung automatische Dekoderanmeldung (z.B. bei MFX).

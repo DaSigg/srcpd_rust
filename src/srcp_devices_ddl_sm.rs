@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::mpsc::Sender};
 
+use log::debug;
+
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
   srcp_protocol_ddl::{DdlProtokolle, HashMapProtokollVersion, SmReadWrite, SmReadWriteType},
@@ -281,6 +283,7 @@ impl SRCPDeviceDDL for DdlSM {
     for (_, prot_familie) in &self.all_protokolle {
       for (_, prot) in prot_familie {
         if let Some(ans) = prot.borrow_mut().sm_get_answer() {
+          debug!("SM RX Antwort: {:?}", ans);
           let mut srcp_para: Vec<String> = Vec::new();
           //Paramater zu SM sind: adr sm_type <alle paramater> value
           srcp_para.push(ans.adr.to_string());
@@ -306,14 +309,14 @@ impl SRCPDeviceDDL for DdlSM {
               session_id: Some(ans.session_id),
               bus: self.bus,
               message_id: SRCPMessageID::Err {
-                err_code: "417".to_string(),
-                err_text: "timeout".to_string(),
+                err_code: "412".to_string(),
+                err_text: "wrong value".to_string(),
               },
               device: SRCPMessageDevice::SM,
               parameter: srcp_para,
             }
           };
-          //info!("SM Antwort: {}", srcp_message.to_string());
+          debug!("SM Antwort: {}", srcp_message.to_string());
           self.tx.send(srcp_message).unwrap();
         }
       }

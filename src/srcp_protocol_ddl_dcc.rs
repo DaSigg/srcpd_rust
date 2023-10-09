@@ -5,6 +5,8 @@ use std::{
   time::Duration,
 };
 
+use log::debug;
+
 use crate::{
   srcp_dcc_prog::{DccCvTel, DccCvTelType, DccProgThread, DCC_SM_TYPE_CV, DCC_SM_TYPE_CVBIT},
   srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode, SmReadWrite},
@@ -193,7 +195,8 @@ impl DccProtokoll {
   /// * ddl_tel - Telegramm, bei dem ein Byte (MSB zuerst) hinzugefügt werden soll
   /// * value - Byte, das hinzugefügt werden soll
   /// * xor - Alter und nachher aktueller xor Wert
-  fn add_byte(&self, ddl_tel: &mut DdlTel, value: u8, xor: &mut u8) {
+  /// * endbit - false: 0 Bit als Byteendemarke einfügen, true 1 als Byteendemarke einfügen für Telegrammende
+  fn add_byte(&self, ddl_tel: &mut DdlTel, value: u8, xor: &mut u8, endbit: bool) {
     for i in (0..8).rev() {
       //Geht von 7 bis 0
       ddl_tel
@@ -207,6 +210,12 @@ impl DccProtokoll {
         });
     }
     *xor ^= value;
+    //Byteendemarke, normalerweise 0, bei Telegrammende 1
+    ddl_tel
+      .daten
+      .last_mut()
+      .unwrap()
+      .extend_from_slice(if endbit { DCC_BIT_1 } else { DCC_BIT_0 });
   }
   /// Fügt die Addresse (1 Byte bis 127, 2 Byte wenn grösser) mit abschliessendem 0 zum letzten in
   /// ddl_tel enthaltenen Tel. hinzu
@@ -217,54 +226,29 @@ impl DccProtokoll {
   fn add_adr(&self, ddl_tel: &mut DdlTel, adr: u32) -> u8 {
     let mut xor: u8 = 0;
     if adr <= MAX_DCC_GL_ADRESSE_KURZ {
-      self.add_byte(ddl_tel, (adr & 0xFF).try_into().unwrap(), &mut xor);
+      self.add_byte(ddl_tel, (adr & 0xFF).try_into().unwrap(), &mut xor, false);
     } else {
       //14 Bit Adr. Es kommen 6 bit MSB ins erste byte, dann 8 Bit bis zum LSB
       //Start des ersten Adr. Bytes mit 11
       let adr_msb: u8 = (0b11000000 | ((adr >> 8) & 0xFF)).try_into().unwrap();
       //Dann die 6 Bits ab MSB, mit MAX_DCC_GL_ADRESSE_LANG ist sichergestellt, dass die ersten 6 Bits
       //nur von 000000 bis 100111 gehen können
-      self.add_byte(ddl_tel, adr_msb, &mut xor);
-      //Nach einem Byte abschliessendes 0
-      ddl_tel
-        .daten
-        .last_mut()
-        .unwrap()
-        .extend_from_slice(DCC_BIT_0);
+      self.add_byte(ddl_tel, adr_msb, &mut xor, false);
       //Und noch ein byte mit den 8 LSB Bits
-      self.add_byte(ddl_tel, (adr & 0xFF).try_into().unwrap(), &mut xor);
+      self.add_byte(ddl_tel, (adr & 0xFF).try_into().unwrap(), &mut xor, false);
     }
-    //Nach einem Byte abschliessendes 0
-    ddl_tel
-      .daten
-      .last_mut()
-      .unwrap()
-      .extend_from_slice(DCC_BIT_0);
     xor
   }
 
   ///DCC Telegramm abschliessen.
-  /// - 0 nach letztem Byte
   /// - xor
-  /// - 1 als Abschluss
+  /// - Doppelte 1 als Abschluss um sicher eine 1 gültig (letzte Flanke) zu haben
   /// # Arguments
   /// * ddl_tel - Telegramm, bei dem die XOR Checksumme ergänzt werden soll
   /// * xor - xor Prüfsumme
-  fn add_xor(&self, ddl_tel: &mut DdlTel, xor: &mut u8) {
-    //Nach einem Byte abschliessendes 0
-    ddl_tel
-      .daten
-      .last_mut()
-      .unwrap()
-      .extend_from_slice(DCC_BIT_0);
+  fn add_xor(&self, ddl_tel: &mut DdlTel, mut xor: u8) {
     //Checksumme ergänzen
-    self.add_byte(ddl_tel, *xor, xor);
-    //Tel mit abschliessenden mit 1 Bit
-    ddl_tel
-      .daten
-      .last_mut()
-      .unwrap()
-      .extend_from_slice(DCC_BIT_1);
+    self.add_byte(ddl_tel, xor, &mut xor, true);
     //Und nochmals ein 1 Bit damit noch ein korrekter Abschluss (letzte Flanke) da ist
     ddl_tel
       .daten
@@ -294,27 +278,23 @@ impl DccProtokoll {
       ));
       self.add_sync(ddl_tel, false);
       let mut xor = self.add_adr(ddl_tel, adr);
-      self.add_byte(ddl_tel, ddl_cmd, &mut xor);
-      //Nach einem Byte abschliessendes 0
-      ddl_tel
-        .daten
-        .last_mut()
-        .unwrap()
-        .extend_from_slice(DCC_BIT_0);
+      self.add_byte(ddl_tel, ddl_cmd, &mut xor, false);
       let f = <u64 as TryInto<u8>>::try_into((funktionen & mask) >> shift).unwrap();
-      self.add_byte(ddl_tel, f, &mut xor);
-      self.add_xor(ddl_tel, &mut xor);
+      self.add_byte(ddl_tel, f, &mut xor, false);
+      self.add_xor(ddl_tel, xor);
     }
   }
   /// Liefert ein DCC CV Read/Write Telegramm.
   /// # Arguments
   /// * cvtel - Zu erzeugendes Telegramm
   fn get_cv_tel(&mut self, cvtel: &DccCvTel) -> DdlTel {
+    debug!("DCC get_cv_tel {:?}", cvtel);
     //CV's gehen von 1 bis 1024, im Telegramm mit 10 Bit von 0 bis 1023
     let cv = cvtel.cv - 1;
     //GL Tel. als Basis, Refresh = 1 mal senden. 2 oder 5 mal senden für Write wird bei Write gesetzt
-    let mut tel = self.get_gl_new_tel(cvtel.adr, false);
-    //Telegramme müssen direkt aufeinander folgen
+    let mut tel = self.get_gl_new_tel(cvtel.adr, true);
+    tel.trigger = true; //DEBUG !!!!!!!!
+                        //Telegramme müssen direkt aufeinander folgen
     tel.delay = Duration::ZERO;
     match cvtel.dcc_cv_type {
       DccCvTelType::VerifyBit(val, bitnr) | DccCvTelType::WriteBit(val, bitnr, _) => {
@@ -338,13 +318,9 @@ impl DccProtokoll {
         } else {
           prog_byte_1 |= DCC_PROG_PROG_GLEIS;
         }
-        self.add_byte(&mut tel, prog_byte_1, &mut xor);
-        //Nach einem Byte abschliessendes 0
-        tel.daten.last_mut().unwrap().extend_from_slice(DCC_BIT_0);
+        self.add_byte(&mut tel, prog_byte_1, &mut xor, false);
         //Unter 8 Bit CV
-        self.add_byte(&mut tel, (cv & 0xFF) as u8, &mut xor);
-        //Nach einem Byte abschliessendes 0
-        tel.daten.last_mut().unwrap().extend_from_slice(DCC_BIT_0);
+        self.add_byte(&mut tel, (cv & 0xFF) as u8, &mut xor, false);
         //Letztes Byte 111K-DBBB, K=0=Verify / K=1=Write, D=BitValue, BBB=Bitnr
         self.add_byte(
           &mut tel,
@@ -353,13 +329,10 @@ impl DccProtokoll {
             | if val { 0b00001000 } else { 0b00000000 }
             | (bitnr & 0b00000111),
           &mut xor,
+          false,
         );
-        //Nach einem Byte abschliessendes 0
-        tel.daten.last_mut().unwrap().extend_from_slice(DCC_BIT_0);
         //XOR
-        self.add_byte(&mut tel, xor, &mut xor);
-        //Tel abschliessende 1
-        tel.daten.last_mut().unwrap().extend_from_slice(DCC_BIT_1);
+        self.add_xor(&mut tel, xor);
       }
       DccCvTelType::VerifyByte(val) | DccCvTelType::WriteByte(val, _) => {
         //Hauptgleisprog. nur bei Write ohne Prog Gleis, alles andere -> Prog Gleis
@@ -387,19 +360,13 @@ impl DccProtokoll {
         } else {
           prog_byte_1 |= DCC_PROG_PROG_GLEIS;
         }
-        self.add_byte(&mut tel, prog_byte_1, &mut xor);
+        self.add_byte(&mut tel, prog_byte_1, &mut xor, false);
         //Unter 8 Bit CV
-        self.add_byte(&mut tel, (cv & 0xFF) as u8, &mut xor);
-        //Nach einem Byte abschliessendes 0
-        tel.daten.last_mut().unwrap().extend_from_slice(DCC_BIT_0);
+        self.add_byte(&mut tel, (cv & 0xFF) as u8, &mut xor, false);
         //Value
-        self.add_byte(&mut tel, val, &mut xor);
-        //Nach einem Byte abschliessendes 0
-        tel.daten.last_mut().unwrap().extend_from_slice(DCC_BIT_0);
+        self.add_byte(&mut tel, val, &mut xor, false);
         //XOR
-        self.add_byte(&mut tel, xor, &mut xor);
-        //Tel abschliessende 1
-        tel.daten.last_mut().unwrap().extend_from_slice(DCC_BIT_1);
+        self.add_xor(&mut tel, xor);
       }
     }
     tel
@@ -504,13 +471,12 @@ impl DdlProtokoll for DccProtokoll {
     //Kommando ist nun abhängig von den gewünschten Anzahl Speed Steps
     if speed_steps > SPEED_STEP_5BIT {
       //Kommando Speed mit 128 Steps und extra Byte mit Speed
-      self.add_byte(ddl_tel, DCC_INST_ADVOP | DCC_INST_ADVOP_128_SPEED, &mut xor);
-      //Nach einem Byte abschliessendes 0
-      ddl_tel
-        .daten
-        .last_mut()
-        .unwrap()
-        .extend_from_slice(DCC_BIT_0);
+      self.add_byte(
+        ddl_tel,
+        DCC_INST_ADVOP | DCC_INST_ADVOP_128_SPEED,
+        &mut xor,
+        false,
+      );
       //MSB Richtung und 7 Bit Speed
       let speed_byte: u8 = ((speed & 0b01111111)
         | if drive_mode_used == GLDriveMode::Vorwaerts {
@@ -520,7 +486,7 @@ impl DdlProtokoll for DccProtokoll {
         })
       .try_into()
       .unwrap();
-      self.add_byte(ddl_tel, speed_byte, &mut xor);
+      self.add_byte(ddl_tel, speed_byte, &mut xor, false);
     } else {
       let mut speed_byte: u8 = if drive_mode_used == GLDriveMode::Vorwaerts {
         DCC_INST_DRIVE_FORWARD
@@ -545,9 +511,9 @@ impl DdlProtokoll for DccProtokoll {
         speed_byte |= TryInto::<u8>::try_into(speed_used & 0b00001111).unwrap()
           | TryInto::<u8>::try_into(((funktionen & 1) << 4) & 0b00010000).unwrap();
       }
-      self.add_byte(ddl_tel, speed_byte, &mut xor);
+      self.add_byte(ddl_tel, speed_byte, &mut xor, false);
     }
-    self.add_xor(ddl_tel, &mut xor);
+    self.add_xor(ddl_tel, xor);
 
     //Nur wenn notwendig: F0..F4 Telegramm
     //Je nach Speedsteps muss F0 hier berücksichtigt werden oder nicht
@@ -571,8 +537,8 @@ impl DdlProtokoll for DccProtokoll {
       if (funktionen & 1) != 0 {
         f0_f4_byte |= 0b00010000;
       }
-      self.add_byte(ddl_tel, f0_f4_byte, &mut xor);
-      self.add_xor(ddl_tel, &mut xor);
+      self.add_byte(ddl_tel, f0_f4_byte, &mut xor, false);
+      self.add_xor(ddl_tel, xor);
     }
     //F0..F4 übernehmen
     self.old_funktionen[adr as usize] &= !BIT_MASK_F0_F4;
@@ -601,8 +567,8 @@ impl DdlProtokoll for DccProtokoll {
       let mut xor = self.add_adr(ddl_tel, adr);
       let mut f5_f8_byte = DCC_INST_F5_F8;
       f5_f8_byte |= <u64 as TryInto<u8>>::try_into((funktionen & BIT_MASK_F5_F8) >> 5).unwrap();
-      self.add_byte(ddl_tel, f5_f8_byte, &mut xor);
-      self.add_xor(ddl_tel, &mut xor);
+      self.add_byte(ddl_tel, f5_f8_byte, &mut xor, false);
+      self.add_xor(ddl_tel, xor);
     }
     //F9..F12 auf Veränderungen prüfen
     if ((((self.old_funktionen[adr as usize] ^ funktionen) & BIT_MASK_F9_F12) != 0) || refresh)
@@ -616,8 +582,8 @@ impl DdlProtokoll for DccProtokoll {
       let mut xor = self.add_adr(ddl_tel, adr);
       let mut f9_f12_byte = DCC_INST_F9_F12;
       f9_f12_byte |= <u64 as TryInto<u8>>::try_into((funktionen & BIT_MASK_F9_F12) >> 9).unwrap();
-      self.add_byte(ddl_tel, f9_f12_byte, &mut xor);
-      self.add_xor(ddl_tel, &mut xor);
+      self.add_byte(ddl_tel, f9_f12_byte, &mut xor, false);
+      self.add_xor(ddl_tel, xor);
     }
     if funk_anz > 13 {
       self.add_f13_f68(
@@ -731,13 +697,8 @@ impl DdlProtokoll for DccProtokoll {
       ddl_tel,
       (0b10000000 | (address & 0b00111111)).try_into().unwrap(),
       &mut xor,
+      false,
     );
-    //Nach einem Byte abschliessendes 0
-    ddl_tel
-      .daten
-      .last_mut()
-      .unwrap()
-      .extend_from_slice(DCC_BIT_0);
     /* address and data 1AAACDDO upper 3 address bits are inverted */
     /* C =  activate, DD = pairnr */
     self.add_byte(
@@ -750,8 +711,9 @@ impl DdlProtokoll for DccProtokoll {
         .try_into()
         .unwrap(),
       &mut xor,
+      false,
     );
-    self.add_xor(ddl_tel, &mut xor);
+    self.add_xor(ddl_tel, xor);
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles
@@ -768,22 +730,10 @@ impl DdlProtokoll for DccProtokoll {
     );
     self.add_sync(&mut ddl_idle_tel, false);
     let mut xor: u8 = 0;
-    self.add_byte(&mut ddl_idle_tel, 0b11111111, &mut xor);
-    //Nach einem Byte abschliessendes 0
-    ddl_idle_tel
-      .daten
-      .last_mut()
-      .unwrap()
-      .extend_from_slice(DCC_BIT_0);
-    self.add_byte(&mut ddl_idle_tel, 0b00000000, &mut xor);
+    self.add_byte(&mut ddl_idle_tel, 0b11111111, &mut xor, false);
+    self.add_byte(&mut ddl_idle_tel, 0b00000000, &mut xor, false);
     //Checksumme ergänzen
-    self.add_byte(&mut ddl_idle_tel, xor, &mut xor);
-    //Tel mit abschliessenden mit 1 Bit
-    ddl_idle_tel
-      .daten
-      .last_mut()
-      .unwrap()
-      .extend_from_slice(DCC_BIT_1);
+    self.add_xor(&mut ddl_idle_tel, xor);
     Some(ddl_idle_tel)
   }
 
@@ -825,7 +775,12 @@ impl DdlProtokoll for DccProtokoll {
   /// Liefert zusätzliche, Protokoll spezifische Telegramme (z.B. bei MFX die UID & Neuanmeldezähler der Zentrale)
   /// Liefert None, wenn es nichts zur versenden gibt
   /// Hier, wenn vorhanden, werden die CV Read/Write Telegramme erzeugt, wenn vom DCC Prog Thread verlangt.
-  fn get_protokoll_telegrammme(&mut self) -> Option<DdlTel> {
+  /// # Arguments
+  /// * power : true wenn Power (Booster) ein, sonst false.
+  ///           Normalerweise werden Telegramme nur bei Power On gesendet.
+  ///           Ausnahme: SM DCC auf Prog. Gleis.
+  ///           Hier nicht verwendet, CV Telegramme werden auf Prog. und Hauptgleis verwendet.
+  fn get_protokoll_telegrammme(&mut self, _power: bool) -> Option<DdlTel> {
     let tel_from_prog = self.rx_tel_from_prog.try_recv();
     if let Ok(tel) = tel_from_prog {
       Some(self.get_cv_tel(&tel))
@@ -850,22 +805,10 @@ impl DdlProtokoll for DccProtokoll {
       );
       self.add_sync(&mut ddl_reset_tel, false);
       let mut xor: u8 = 0;
-      self.add_byte(&mut ddl_reset_tel, 0b00000000, &mut xor);
-      //Nach einem Byte abschliessendes 0
-      ddl_reset_tel
-        .daten
-        .last_mut()
-        .unwrap()
-        .extend_from_slice(DCC_BIT_0);
-      self.add_byte(&mut ddl_reset_tel, 0b00000000, &mut xor);
+      self.add_byte(&mut ddl_reset_tel, 0b00000000, &mut xor, false);
+      self.add_byte(&mut ddl_reset_tel, 0b00000000, &mut xor, false);
       //Checksumme ergänzen
-      self.add_byte(&mut ddl_reset_tel, xor, &mut xor);
-      //Tel mit abschliessenden mit 1 Bit
-      ddl_reset_tel
-        .daten
-        .last_mut()
-        .unwrap()
-        .extend_from_slice(DCC_BIT_1);
+      self.add_xor(&mut ddl_reset_tel, xor);
       Some(ddl_reset_tel)
     } else {
       //Nichts zu senden wenn kein SM aktiv ist

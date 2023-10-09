@@ -20,7 +20,7 @@ const GPIO_PROG_ACK: u16 = 22;
 const DEC_ACK_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// Read / Write für DccCvTel
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum DccCvTelType {
   /// Ver. ein Bit. (Bit Value, Bitnummer), nur Prog Gleis.
   VerifyBit(bool, u8),
@@ -33,7 +33,7 @@ pub enum DccCvTelType {
 }
 
 /// DCC CV Read/Write Telegramm senden durch DDL DCC Anfordern
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DccCvTel {
   /// Lok Adrdesse, 0 bei Prog.Gleis
   pub adr: u32,
@@ -87,30 +87,36 @@ impl DccProgThread {
   /// * dcc_cv_tel - zu sendendes CV Telegramm.
   /// * prog_gleis - true wenn Prog Gleis und Dekoder Quittierung erwartet wird.
   fn send_dcc_cv_tel(&mut self, dcc_cv_tel: &DccCvTel, prog_gleis: bool) -> Option<bool> {
-    if prog_gleis && (self.gpio_prog_ack.read_value().unwrap() == GpioValue::High) {
-      //Fehler, Quittungsrückmeldung müsste vor Befehl 0 sein.
-      None
-    }
-    else {
-      self.tx_tel.send(dcc_cv_tel.clone()).unwrap();
-      if prog_gleis {
-        let mut ack = false;
-        //Warten auf Quittierungsimpuls. Dieser sollte nach spätestens 100ms vorhanden sein und min. 5ms lang sein.
-        let timeout = Instant::now();
-        while (timeout + DEC_ACK_TIMEOUT) < Instant::now() {
-          //Impuls ist sicher 5ms lang, also reicht es, alle 0.5ms zu prüfen
-          thread::sleep(Duration::from_micros(500));
-          if self.gpio_prog_ack.read_value().unwrap() == GpioValue::High {
-            //Quittierung
-            ack = true;
-            break;
+    debug!("DccProgThread tx_tel dcc_cv_tel={:?} prog_gleis={}", dcc_cv_tel, prog_gleis);
+    let ack_vorher = self.gpio_prog_ack.read_value().unwrap() == GpioValue::High;
+    self.tx_tel.send(dcc_cv_tel.clone()).unwrap();
+    if prog_gleis {
+      //Warten auf Quittierungsimpuls. Dieser sollte nach spätestens 100ms vorhanden sein und min. 5ms lang sein.
+      let timeout = Instant::now();
+      while (timeout + DEC_ACK_TIMEOUT) > Instant::now() {
+        //Impuls ist sicher 5ms lang, also reicht es, alle 0.5ms zu prüfen
+        thread::sleep(Duration::from_micros(500));
+        if self.gpio_prog_ack.read_value().unwrap() == GpioValue::High {
+          //Warten bis Impuls wieder weg ist.
+          while (timeout + DEC_ACK_TIMEOUT) > Instant::now() {
+            thread::sleep(Duration::from_micros(500));
+            if self.gpio_prog_ack.read_value().unwrap() == GpioValue::Low {
+              //Quittierung, wenn vorher Quittierung nicht anstand ist das falsch
+              if ack_vorher {
+                warn!("DccProgThread send_dcc_cv_tel Dekoder Quittierung vorher anstehend");
+                return None;
+              }
+              info!("DccProgThread send_dcc_cv_tel Dekoder Quittierung OK");
+              return Some(true);
+            }
           }
         }
-        Some(ack)
-      } else {
-        Some(true)
       }
-      }
+      info!("DccProgThread send_dcc_cv_tel Dekoder Quittierung Timeout");
+      return Some(false);
+    } else {
+      return Some(true);
+    }
   }
 
   /// Führt ein SM Kommando für Write und Verify aus.
@@ -215,7 +221,7 @@ impl DccProgThread {
           return Some(result);
         }
         else {
-          warn!("DccProgThread read_cv Byte Error. smcmd={:?}, CV={}", smcmd, result);
+          debug!("DccProgThread read_cv Byte Error. smcmd={:?}, CV={}", smcmd, result);
           return None;
         }
       }
@@ -239,7 +245,7 @@ impl DccProgThread {
       let mut smcmd = self.rx.recv().unwrap();
       debug!("DccProgThread neues SM Kommando: {:?}", smcmd);
       //Default = Fehler
-      smcmd.val = SmReadWriteType::ResultErr;
+      let mut ans = SmReadWriteType::ResultErr;
       //Gültigkeit der Parameter prüfen
       //Write und Ver haben Value, 0 ist immer gültig als Default
       let val = match smcmd.val{
@@ -265,14 +271,14 @@ impl DccProgThread {
           SmReadWriteType::Read => {
             if let Some(val) = self.read_cv(&smcmd) {
               //Erfolgreich ausgelesen
-              smcmd.val = SmReadWriteType::ResultOk(val as u32);
+              ans = SmReadWriteType::ResultOk(val as u32);
             }
           }
           SmReadWriteType::Write(val) | SmReadWriteType::Verify(val) => {
             if let Some(result) = self.execute_sm_cmd_write_ver(&smcmd) {
               if result {
                 //Erfolgreich ausgeführt
-                smcmd.val = SmReadWriteType::ResultOk(val);
+                ans = SmReadWriteType::ResultOk(val);
               }
             }
           }
@@ -282,6 +288,8 @@ impl DccProgThread {
         }
       }
       //Antwort zurücksenden
+      smcmd.val = ans;
+      debug!("DccProgThread Sende Antwort: {:?}", smcmd);
       self.tx.send(smcmd).unwrap();
     }
   }
