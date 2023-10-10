@@ -888,8 +888,26 @@ impl MfxRdsFeedbackThread {
                 //Write
                 self.write_cv(ca_parameter.adr, cv, index, &vec![val as u8]);
               }
+              SmReadWriteType::Verify(val_ver) => {
+                //Zuerst Read
+                if let Some(val) = self.read_cv(ca_parameter.adr, cv, index, MfxCvTelBytes::Cc1byte)
+                {
+                  //Alles OK, gelesener Wert vergleichen
+                  ca_parameter.val = if val_ver == val[0] as u32 {
+                    SmReadWriteType::ResultOk(val[0] as u32)
+                  } else {
+                    SmReadWriteType::ResultErr
+                  };
+                } else {
+                  warn!(
+                    "MFX Error ReadCA read_cv {}.{} für SID={}",
+                    cv, index, ca_parameter.adr
+                  );
+                  ca_parameter.val = SmReadWriteType::ResultErr;
+                }
+              }
               _ => {
-                //Keine Aktion für Verify, VerifyBit (wird hier nicht unterstützt) und Results
+                //Keine Aktion Results
                 warn!(
                   "MFX Error nicht unterstützter Kommandotype {:?}",
                   ca_parameter.val

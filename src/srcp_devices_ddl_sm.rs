@@ -297,8 +297,8 @@ impl SRCPDeviceDDL for DdlSM {
             SRCPMessage {
               session_id: Some(ans.session_id),
               bus: self.bus,
-              message_id: SRCPMessageID::Info {
-                info_code: "200".to_string(),
+              message_id: SRCPMessageID::Ok {
+                ok_code: "200".to_string(),
               },
               device: SRCPMessageDevice::SM,
               parameter: srcp_para,

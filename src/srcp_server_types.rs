@@ -64,7 +64,7 @@ impl SRCPMessageID {
     match &self {
       SRCPMessageID::Info { info_code: _ } => false,
       SRCPMessageID::Command { msg_type: _ } => false,
-      SRCPMessageID::Ok { ok_code: _ } => true,
+      SRCPMessageID::Ok { ok_code: _ } => false,
       SRCPMessageID::Err {
         err_code: _,
         err_text: _,
