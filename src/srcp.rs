@@ -86,7 +86,7 @@ fn read_line(mut client_stream: &TcpStream, line: &mut String) -> Result<(), ()>
 /// SRCP Message zum Client senden
 /// Liefert Err bei Verbindungsabbruch
 /// # Arguments
-/// * client_stream - TCP Stream von dem gelesen werden soll
+/// * client_stream - TCP Stream auf den geschrieben werden soll
 /// * msg - Die zu sendene Message. Diese wird am Anfang mit Timestamp ergänzt und am Schluss mit\n
 fn send_srcp_message(mut client_stream: &TcpStream, msg: &str) -> Result<(), String> {
   let time = SystemTime::now()
@@ -271,8 +271,8 @@ fn handle_srcp_commandmode(
               CMD_TIMEOUT
             }) {
               //info!("SRCP Antwort: {}", msg.to_string());
-              if let Err(msg) = send_srcp_message(client_stream, msg.to_string().as_str()) {
-                warn!("{}", msg);
+              if let Err(errmsg) = send_srcp_message(client_stream, msg.to_string().as_str()) {
+                warn!("Send SRCP Error {}, SRCP Message {:?}", errmsg, msg);
                 break;
               }
             } else {

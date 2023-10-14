@@ -503,7 +503,7 @@ impl MfxRdsFeedbackThread {
     self.check_cv_cache(adr);
     let count = byte_count.byte_count();
     //Falls im Cache, aus diesem liefern
-    let cv_index = (cv << 6) | index as u16;
+    let cv_index = (cv << 6) | (index & 0x003F) as u16;
     let mut in_cache = true;
     let mut result = None;
     {
@@ -567,9 +567,20 @@ impl MfxRdsFeedbackThread {
       })
       .unwrap();
     //Cache löschen damit ein Lesen als verify auch tatsächlich gemacht werden muss
+    self.clear_cache(adr, cv, index, value.len() as u16);
+  }
+
+  /// Cahce löschen
+  /// # Arguments
+  /// * adr - Schienenadresse des Dekoders
+  /// * cv - MFX CV (10 Bits)
+  /// * index - MFX CV Index (6 Bits)
+  /// * len - Anzahl zu löschende Einträge ab "index"
+  fn clear_cache(&mut self, adr: u32, cv: u16, index: u8, len: u16) {
+    //Cache löschen damit ein Lesen als verify auch tatsächlich gemacht werden muss
     self.check_cv_cache(adr);
-    let cv_index = (cv << 6) | index as u16;
-    for i in 0..value.len() as u16 {
+    let cv_index = (cv << 6) | (index & 0x003F) as u16;
+    for i in 0..len {
       self.cv_cache.remove(&(cv_index + i));
     }
   }
@@ -887,8 +898,12 @@ impl MfxRdsFeedbackThread {
               SmReadWriteType::Write(val) => {
                 //Write
                 self.write_cv(ca_parameter.adr, cv, index, &vec![val as u8]);
+                //Immer OK, es gibt keine Rückmeldung
+                ca_parameter.val = SmReadWriteType::ResultOk(val);
               }
               SmReadWriteType::Verify(val_ver) => {
+                //Ein Verify darf nie aus dem Cache kommen
+                self.clear_cache(ca_parameter.adr, cv, index, 1);
                 //Zuerst Read
                 if let Some(val) = self.read_cv(ca_parameter.adr, cv, index, MfxCvTelBytes::Cc1byte)
                 {
