@@ -39,7 +39,7 @@ mod srcp_server_s88;
 mod srcp_server_types;
 
 /// PID Filename
-const PID_FILE: &str = "/var/run/srcpd.pid";
+const PID_FILE: &str = "/run/srcpd.pid";
 
 /// Liefert alle vorhandenen SRCP Servertypen zurück
 fn get_alle_srcp_server() -> Vec<Rc<RefCell<dyn srcp_server_types::SRCPServer>>> {
