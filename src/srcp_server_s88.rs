@@ -18,6 +18,8 @@ const MAX_S88: usize = 4;
 const SPI_HZ: u32 = 20_000;
 /// maximal number of bytes read from one s88-bus
 const S88_MAXPORTSB: usize = 64;
+/// Pause zwischen 2 SPI Transfers damit alle CE Leitungen sicher minimale Zeit auf 1 sind
+const PAUSE_SPI_TRANSFER: Duration = Duration::from_micros(500);
 
 #[derive(Clone)]
 pub struct S88 {
@@ -111,6 +113,8 @@ impl S88 {
             .unwrap()
             .read(s88_input_buffer[spi_bus][akt_wiederhol_index].as_mut_slice())
             .expect("S88 SPI read fail");
+          //Damit sicher alle CE Leitungen gemeinsam eine minimale Zeit auf 1 zurück sind zwischen den beiden Transfers etwas warten
+          thread::sleep(PAUSE_SPI_TRANSFER);
         }
       }
       //Mehrheitsentscheid über alle verlangten Wiederholungen
