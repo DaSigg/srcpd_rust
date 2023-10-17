@@ -4,6 +4,7 @@ use crate::srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode};
 
 /// SPI Baudrate für Märklin / Motorola Protokoll.
 /// Diese wäre eigentlich genau 38461 Baud (1 Bit=26us, 1Byte=208us)
+/// Hinweis: kleinst möglicher SPI Clock bei 250 MHz core_freq ist 30.5 kHz.
 const SPI_BAUDRATE_MAERKLIN_LOCO: u32 = 38461;
 /// Nun macht der RaspberryPI aber leider nach jedem Byte Transfer auf dem SPI Bus 1 Bit Pause :-(
 /// Er macht diese 1 Bit / Clk Pause nicht mehr im DMA Mode. DMA wird ab Transfers

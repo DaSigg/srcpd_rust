@@ -111,6 +111,8 @@ fn main() {
 }
 
 /// Power Off für alle vorhandenen Busse wenn Programm terminiert wird
+/// Kehrt zuürck wenn SIGTERM, SIGINT, SIGHUP, SIGQUIT empfangen wurde und Power Off
+/// an alle Busse gesendet wurde.
 /// # Arguments
 /// * all_cmd_tx - alle Sender für alle vorhandene SRCP Server
 fn terminate_poweroff(all_cmd_tx: HashMap<usize, Sender<Message>>) {
@@ -135,7 +137,7 @@ fn terminate_poweroff(all_cmd_tx: HashMap<usize, Sender<Message>>) {
     }
     //Kurze Pause damit alles ausgeschaltet werden kann
     thread::sleep(Duration::from_millis(200));
-    process::exit(0);
+    break;
   }
 }
 
@@ -163,6 +165,8 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
     env!("CARGO_PKG_VERSION"),
     env!("CARGO_PKG_HOMEPAGE")
   );
+  println!("Raspberry PI: in /boot/config.txt core_freq=250 und core_freq_min=250 setzen!");
+  println!("Dies ist notwendig um einen stabilen und für S88 keinen zu hohen SPI Clock zu haben.");
   let cmd_line_config = match CmdLineConfig::parse_cmd_line(args) {
     Ok(v) => v,
     Err(message) => {
@@ -265,6 +269,7 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
     .spawn(move || {
       terminate_poweroff(all_cmd_tx_copy);
       del_pidfile();
+      process::exit(0);
     })
     .unwrap();
 

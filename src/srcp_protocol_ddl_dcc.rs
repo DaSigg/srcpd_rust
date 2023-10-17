@@ -17,6 +17,7 @@ use crate::{
 //ein langer 116/116us Impuls wird dann als 2 Bytes (0xFF, 0x00) ausgegeben.
 //Damit hätten wird für 8 Bit also 116us -> 1 Bit 14.5us -> 68966 Baud.
 //Damit werden NMRA/DCC Pakete inkl. der führenden Sync. Bytes leider nicht immer >= 96 Bytes -> DMA Mode und keine Pause nach 8 Bits
+//Hinweis: kleinst möglicher SPI Clock bei 250 MHz core_freq ist 30.5 kHz.
 const SPI_BAUDRATE_NMRA: u32 = 68966;
 //Deshalb wird auch hier die doppelte Baudrate verwendet und dann wie folgt kodiert:
 //1: 0xFF, 0x00

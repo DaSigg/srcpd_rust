@@ -15,6 +15,11 @@ use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 /// Max. Anzahl unterstützer S88 Busse (= Anzahl belegter SRCP Busse)
 const MAX_S88: usize = 4;
 /// Frequenz SPI Bus für S88
+/// Leider ist bei allen SPI interfaces die kleinst mögliche Taktrate core_freq / (2 * (speed + 1)).
+/// speed ist je 12 Bit, max. also 4095.
+/// Bei 250MHz sind wir also bei 30.5kHz. Das geht bei mir noch stabil, 50 kHz geht nicht mehr stabil.
+/// -> core_freq darf nicht grösser als 250MHz gesetzt werden!
+/// Die 20 kHz sind ein Wunsch, der auf SPI des Broadcom Chips nicht in Erfüllung geht .... :-(
 const SPI_HZ: u32 = 20_000;
 /// maximal number of bytes read from one s88-bus
 const S88_MAXPORTSB: usize = 64;

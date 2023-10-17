@@ -17,6 +17,7 @@ use crate::{
 //Auch hier müssen wir auf sicher 96 Bytes kommen um im DMA Modus zu sein und keine Pause zwischen den Bytes zu haben.
 //1 Bit in MFX sind immer 100us. 1 Bit wird auf ein SPI Byte gelegt, also für ein Bit 100 / 8 = 12.5us -> 80000 Baud
 //Grösse Paket wird damit (mit Sync Muster) für das kleinst mögliche Paket, das wir senden:
+//Hinweis: kleinst möglicher SPI Clock bei 250 MHz core_freq ist 30.5 kHz.
 const SPI_BAUDRATE_MFX: u32 = 80000;
 //Minimales Paket das verwendet wird, ist "Fahren kurz" plus "Funktionen kurz"
 // - 0            :  4 Bit -> Sicherstellen, dass Startpegel immer 0 ist
