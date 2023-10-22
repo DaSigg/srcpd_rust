@@ -29,11 +29,20 @@ impl GAInit {
   }
 }
 
-///Verwaltung automatisches Ausschalten nach Delay
-struct GAAutoOff {
+///Grund für GA in "GADelay"
+enum GADelayGrund {
+  ///Einschaltung war noch nicht möglich weil auf dem gleichen Dekoder noch eine andere Ausgabe aktiv war
+  ///value: wie lange muss der Ausgang aktiv bleiben
+  Einschalten(Duration),
+  ///Verzögertes Ausschalten
+  ///value: wann soll der Ausgang ausgeschaltet werden
+  Ausschalten(Instant),
+}
+///Verwaltung verzögerte Ausgabe und automatisches Ausschalten nach Delay
+struct GADelay {
   adr: u32,
   port: usize,
-  off_zeit: Instant,
+  ga_delay_grund: GADelayGrund,
 }
 
 pub struct DdlGA<'a> {
@@ -47,8 +56,8 @@ pub struct DdlGA<'a> {
   all_protokolle: HashMapProtokollVersion,
   //Alle initialisierten GA, Key Adresse
   all_ga: HashMap<u32, GAInit>,
-  //Verwaltung aller GA die nach Delayzeit noch automatisch ausgeschaltet werden müssen
-  all_ga_auto_off: Vec<GAAutoOff>,
+  //Verwaltung aller GA die verzögert ausgegeben oder nach Delayzeit noch automatisch ausgeschaltet werden müssen
+  all_ga_delay: Vec<GADelay>,
 }
 
 impl DdlGA<'_> {
@@ -68,7 +77,7 @@ impl DdlGA<'_> {
       spidev,
       all_protokolle,
       all_ga: HashMap::new(),
-      all_ga_auto_off: Vec::new(),
+      all_ga_delay: Vec::new(),
     }
   }
 
@@ -171,6 +180,43 @@ impl DdlGA<'_> {
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr, port, value);
   }
+
+  /// Stellt fest ob ein Dekoder bereits eine aktive Ausgabe hat für alle GA's, die über SRCP automatisch nach
+  /// Timout in SET GA Kommando ausgeschaltet werden.
+  /// # Arguments
+  /// * adr - GA Adresse
+  fn is_dekoder_aktiv(&self, ga_adr: u32) -> bool {
+    let dek_adr = (ga_adr - 1) / 4;
+    //Durchsuchen ob für diesen Dekoder eine Ausschaltung hängig ist
+    for ga_delay in &self.all_ga_delay {
+      match ga_delay.ga_delay_grund {
+        GADelayGrund::Einschalten(_) => (),
+        GADelayGrund::Ausschalten(_) => {
+          if dek_adr == ((ga_delay.adr - 1) / 4) {
+            //Dekoder bereits aktiv
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /// GA einschalten mit Timeout für automatische Ausschaltung
+  /// # Arguments
+  /// * adr - GA Adresse
+  /// * port - Port zu Adresse
+  /// * timeout - Nach welcher Zeit soll die automatische Ausschaltung erfolgen
+  fn set_ga_on_timeout(&mut self, adr: u32, port: usize, timeout: Duration) {
+    //Einschalten ausführen
+    self.send_ga(adr, port, true);
+    //In Verwaltung zur automatischen Ausschaltung übernehmen
+    self.all_ga_delay.push(GADelay {
+      adr,
+      port,
+      ga_delay_grund: GADelayGrund::Ausschalten(Instant::now() + timeout),
+    });
+  }
 }
 
 impl SRCPDeviceDDL for DdlGA<'_> {
@@ -270,7 +316,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
           if self.validate_get_set(cmd_msg, 4) {
             //Jetzt noch <value> und <time> prüfen
             if (cmd_msg.parameter[2] == "0" || cmd_msg.parameter[2] == "1")
-              && cmd_msg.parameter[3].parse::<i16>().is_ok()
+              && cmd_msg.parameter[3].parse::<i32>().is_ok()
             {
               //OK an diese Session
               self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
@@ -305,13 +351,17 @@ impl SRCPDeviceDDL for DdlGA<'_> {
   /// * cmd_msg - Empfangenes Kommando
   /// * power - true wenn Power eingeschaltet, Booster On sind
   fn execute_cmd(&mut self, cmd_msg: &SRCPMessage, _power: bool) {
-    let SRCPMessageID::Command { msg_type } = cmd_msg.message_id else {return};
+    let SRCPMessageID::Command { msg_type } = cmd_msg.message_id else {
+      return;
+    };
     match msg_type {
       SRCPMessageType::INIT => {
         //Format ist INIT <bus> GA <addr> <protocol> <optional further parameters>
         //Zwei Parameter müssen vorhanden sein: <addr> <protocol>
         //Zuerst das Protokoll
-        let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) else {return};
+        let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) else {
+          return;
+        };
         //Adresse
         let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         self.all_ga.insert(adr, GAInit::new(protokoll));
@@ -349,16 +399,31 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         if self.all_ga.contains_key(&adr) {
           let port = cmd_msg.parameter[1].parse::<usize>().unwrap();
           let value = cmd_msg.parameter[2] == "1";
-          self.send_ga(adr, port, value);
-          let switch_off_timeout = cmd_msg.parameter[3].parse::<i16>().unwrap();
-          if switch_off_timeout > 0 {
-            //In Verwaltung zur automatischen Ausschaltung übernehmen
-            self.all_ga_auto_off.push(GAAutoOff {
-              adr,
-              port,
-              off_zeit: Instant::now()
-                + Duration::from_millis(switch_off_timeout.try_into().unwrap()),
-            });
+          let switch_off_timeout = cmd_msg.parameter[3].parse::<i32>().unwrap();
+          if value && (switch_off_timeout > 0) {
+            //Zumindest die alten Märklin k83 Dekoder könne nicht mehrere Ausgänge gleichzeitig aktiviert haben.
+            //Wenn Ausschalten hier gemacht wird, dann stellen wir hier auch sicher, dass nicht mehr als ein
+            //Ausgang auf einem Dekoder gleichzeitg aktiv ist.
+            //Wenn der Anwender das übernimmt (Zeit <=0), dann muss er das elbst im Griff haben
+            if self.is_dekoder_aktiv(adr) {
+              //In Verwaltung für verzögertes Einschalten übernehmen
+              self.all_ga_delay.push(GADelay {
+                adr,
+                port,
+                ga_delay_grund: GADelayGrund::Einschalten(Duration::from_millis(
+                  switch_off_timeout.try_into().unwrap(),
+                )),
+              });
+            } else {
+              self.set_ga_on_timeout(
+                adr,
+                port,
+                Duration::from_millis(switch_off_timeout.try_into().unwrap()),
+              );
+            }
+          } else {
+            //Keine Zeitangabe für Ausschalten vom Anwender oder explizites Ausschalten, immer sofort ausführen
+            self.send_ga(adr, port, value);
           }
         }
       }
@@ -368,7 +433,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
     }
   }
 
-  /// Alle internen zustände als Info Message versenden
+  /// Alle internen Zustände als Info Message versenden
   /// # Arguments
   /// * session_id - SRCP Client Session ID an die die Zustände gesendet werden sollen.
   ///                None -> Info an alle SRCP Clients
@@ -383,26 +448,41 @@ impl SRCPDeviceDDL for DdlGA<'_> {
   }
 
   /// Muss zyklisch aufgerufen werden. Erlaubt dem Device die Ausführung von
-  /// von neuen Kommando oder refresh unabhängigen Aufgaben.
+  /// von neuen Kommandos oder refresh unabhängigen Aufgaben.
   /// Liefert true zurück, wenn durch den Aufruf min. ein DDL Telegramm gesendet wurde, sonst false.
-  /// Hier wird das automatische Ausschalten von GA Outputs nach Delay Zeit ausgeführt
+  /// Hier wird das verzögerte Einschaloten und automatische Ausschalten von GA Outputs nach Delay Zeit ausgeführt
   /// # Arguments
   /// * power - true: Power / Booster ist ein, Strom auf den Schienen
   ///           false: Power / Booster ist aus
   fn execute(&mut self, power: bool) -> bool {
     let mut tel_gesendet = false;
-    //Ausschaltkommando senden macht nur Sinn, wenn Power vorhanden ist
+    //Ein- Ausschaltkommando senden macht nur Sinn, wenn Power vorhanden ist
     if power {
       let mut i = 0;
-      while i < self.all_ga_auto_off.len() {
-        let ga_auto_off = &self.all_ga_auto_off[i];
-        if Instant::now() > ga_auto_off.off_zeit {
-          //Auto off
-          tel_gesendet = true;
-          self.send_ga(ga_auto_off.adr, ga_auto_off.port, false);
-          self.all_ga_auto_off.remove(i);
-        } else {
-          i += 1;
+      while i < self.all_ga_delay.len() {
+        let ga_delay = &self.all_ga_delay[i];
+        match ga_delay.ga_delay_grund {
+          GADelayGrund::Einschalten(einschaltzeit) => {
+            //Falls der Dekoder nicht mehr verwendet wird kann nun die Ausgabe dieses GA Kommandos erfolgen
+            if !self.is_dekoder_aktiv(ga_delay.adr) {
+              //Ausführen
+              self.set_ga_on_timeout(ga_delay.adr, ga_delay.port, einschaltzeit);
+              //Eintrag löschen
+              self.all_ga_delay.remove(i);
+            } else {
+              i += 1;
+            }
+          }
+          GADelayGrund::Ausschalten(off_zeit) => {
+            if Instant::now() > off_zeit {
+              //Auto off
+              tel_gesendet = true;
+              self.send_ga(ga_delay.adr, ga_delay.port, false);
+              self.all_ga_delay.remove(i);
+            } else {
+              i += 1;
+            }
+          }
         }
       }
     }

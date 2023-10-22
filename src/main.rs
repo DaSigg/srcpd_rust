@@ -108,7 +108,8 @@ impl CmdLineConfig {
 ///Main
 fn main() {
   env::set_var("RUST_BACKTRACE", "1");
-  env::set_var("RUST_LOG", "DEBUG");
+  //env::set_var("RUST_LOG", "DEBUG");
+  //Log Ausgaben mit lokaler Zeit
   Builder::new()
     .format(|buf, record| {
       let mut style = buf.style();
