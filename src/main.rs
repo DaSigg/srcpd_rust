@@ -4,12 +4,17 @@
 //!
 //! 25.03.23 Basisversion
 
+use chrono::Local;
 use configparser::ini::Ini;
+use env_logger::fmt::Color;
+use env_logger::Builder;
 use fork::{fork, Fork};
-use log::{error, info, warn};
+use log::{error, info, warn, LevelFilter};
 use nix::libc::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use signal_hook::iterator::Signals;
 use srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType};
+use std::io::Write;
+use std::str::FromStr;
 use std::{
   cell::RefCell,
   collections::HashMap,
@@ -104,7 +109,30 @@ impl CmdLineConfig {
 fn main() {
   env::set_var("RUST_BACKTRACE", "1");
   env::set_var("RUST_LOG", "DEBUG");
-  env_logger::builder().format_timestamp_millis().init();
+  Builder::new()
+    .format(|buf, record| {
+      let mut style = buf.style();
+      style.set_color(match record.level() {
+        log::Level::Error => Color::Red,
+        log::Level::Warn => Color::Yellow,
+        log::Level::Info => Color::Green,
+        log::Level::Debug => Color::White,
+        log::Level::Trace => Color::White,
+      });
+      writeln!(
+        buf,
+        "{} {:5}  {}",
+        Local::now().format("%d.%m.%Y %H:%M:%S%.3f"),
+        style.value(record.level()),
+        record.args()
+      )
+    })
+    .filter(
+      None,
+      LevelFilter::from_str(env::var("RUST_LOG").unwrap_or("INFO".to_string()).as_str())
+        .unwrap_or(LevelFilter::Info),
+    )
+    .init();
   if let Err(msg) = start(env::args()) {
     error!("Start Error: {}", msg);
   }
