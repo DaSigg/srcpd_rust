@@ -25,6 +25,12 @@ pub struct DdlTel {
   /// Ab wann darf das nächste Telegramm gesendet werden:
   /// Zeitpunkt Ende Versenden letztes + delay
   pub instant_next: Option<Instant>,
+  /// Pause die am Anfang des Telegrammes notwendig ist.
+  /// Dient nur der Information, die Pause selbst MUSS als 0-Bytes in den Daten enthalten sein!
+  pub pause_start: Duration,
+  /// Pause die am Ende des Telegrammes notwendig ist.
+  /// Wenn auf ein Telegramm mit "pause_ende" eines mit "pause_start" start kommt, dann werden die Pausen kombiniert und nicht addiert!
+  pub pause_ende: Duration,
   /// Die Bytes die gesendet werden müssen
   /// Es können hier mehrere unabhängige Telegramme zurückgegeben werden. Wenn diese nicht
   /// unmittelbar nacheinander gesendet werden dürfen. z.B. verlangt DCC 5ms zwischen 2 Telegrammen
@@ -60,6 +66,8 @@ impl DdlTel {
       hz,
       delay,
       delay_only2nd,
+      pause_start: Duration::ZERO,
+      pause_ende: Duration::ZERO,
       instant_next: None,
       daten: vec![Vec::with_capacity(capacity)],
       daten_rx: None,

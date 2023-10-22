@@ -1,4 +1,7 @@
-use std::time::Instant;
+use std::{
+  thread,
+  time::{Duration, Instant},
+};
 
 use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
 use spidev::{Spidev, SpidevTransfer};
@@ -51,7 +54,7 @@ pub trait SRCPDeviceDDL {
       ddl_tel.daten.len() > 0,
       "Aufruf SRCPDeviceDDL::send mit leerem ddl_tel"
     );
-    // Debug Oszi Trigger
+    //Debug Oszi Trigger
     let mut gpio_trigger_out: Option<SysFsGpioOutput> = None;
     if ddl_tel.trigger {
       //GPIO12, Pin32 für Trigger
@@ -65,6 +68,17 @@ pub trait SRCPDeviceDDL {
         .set_value(GpioValue::High)
         .unwrap();
     }
+    //Verlangte Pause nach Telegramme des letzten gesendten Telegrammes. Gilt für alle Instanzen "SRCPDeviceDDL".
+    static mut LETZTE_PAUSE_ENDE: Duration = Duration::ZERO;
+    //Zugriff erfolgt nur aus einem Thread, also OK
+    unsafe {
+      if LETZTE_PAUSE_ENDE > ddl_tel.pause_start {
+        //Es ist noch eine Pause zum Start aufgrund verlangter Pause am Ende des letztens Telegrammes notwendig
+        thread::sleep(LETZTE_PAUSE_ENDE - ddl_tel.pause_start);
+      }
+      LETZTE_PAUSE_ENDE = ddl_tel.pause_ende;
+    }
+
     let mut transfer = match ddl_tel.daten_rx.as_mut() {
       Some(daten_rx) if ddl_tel.daten.len() == 1 => {
         assert_eq!(

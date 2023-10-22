@@ -17,6 +17,20 @@ pub const SPI_BAUDRATE_MAERKLIN_LOCO_2: u32 = 2 * SPI_BAUDRATE_MAERKLIN_LOCO;
 const SPI_BAUDRATE_MAERKLIN_FUNC_2: u32 = 2 * SPI_BAUDRATE_MAERKLIN_LOCO_2;
 /// - 0 Bytes für Pause vor Paket: 4.2ms (Lok), resp. 2.1ms (Schaltdekoder) -> wegen bei doppleter Baudrate 1 Byte 104us (Lok). 62us (Schalt) = 42 Bytes
 const MM_LEN_PAUSE_START: usize = 42;
+/// -  Pause vor Paket: 4.2ms (Lok)
+const MM_PAUSE_START_GL: Duration = Duration::from_micros(
+  (1000000 * MM_LEN_PAUSE_START as u64 * 8) / SPI_BAUDRATE_MAERKLIN_LOCO_2 as u64,
+);
+/// -  Pause vor Paket: 2.1ms (Schaltdekoder)
+const MM_PAUSE_START_GA: Duration = Duration::from_micros(
+  (1000000 * MM_LEN_PAUSE_START as u64 * 8) / SPI_BAUDRATE_MAERKLIN_FUNC_2 as u64,
+);
+/// -  Pause nach Paket: "4 Bittimes", 416us * 4, aufgerundet: 1800us (Lok)
+/// Pause nach MM Paket ist notwendig, damit die Dekoder (vor allem mit orginal MC145027 Chip) wieder
+/// in Grundstellung gehen. Ansonsten können sie auf direkt folgenden Befehl ohne Pause (z.B. DCC) reagieren.
+const MM_PAUSE_ENDE_GL: Duration = Duration::from_micros(1800);
+/// -  Pause nach Paket: "4 Bittimes", 208us * 4, aufgerundet: 900us (Schaltdekoder)
+const MM_PAUSE_ENDE_GA: Duration = Duration::from_micros(900);
 /// Für Märklin Motorola wird wie folgt kodiert (doppelte Baudrate):
 /// - Paket mit
 ///  - 0 -> 0xC0, 0x00, ich habe aber Schaltdekoder, die damit nicht funktionieren sondern einen ein wenig längeren Impuls wollen, also 0xE0, 0x00 ....
@@ -507,14 +521,17 @@ impl DdlProtokoll for MMProtokoll {
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
   fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel {
-    DdlTel::new(
+    let mut tel = DdlTel::new(
       adr,
       SPI_BAUDRATE_MAERKLIN_LOCO_2,
       Duration::ZERO,
       true,
       MM_LEN,
       if refresh { 1 } else { 2 }, //Neue Kommandos 2-fach senden
-    )
+    );
+    tel.pause_start = MM_PAUSE_START_GL;
+    tel.pause_ende = MM_PAUSE_ENDE_GL;
+    tel
   }
 
   /// Erzeugt das Basis Telegramm für GL.
@@ -601,14 +618,17 @@ impl DdlProtokoll for MMProtokoll {
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
   fn get_ga_new_tel(&self, adr: u32) -> DdlTel {
     //Neue neue Kommandos, kein Refresh -> 2-fach senden
-    DdlTel::new(
+    let mut tel = DdlTel::new(
       adr,
       SPI_BAUDRATE_MAERKLIN_FUNC_2,
       Duration::ZERO,
       false,
       MM_LEN,
       2,
-    )
+    );
+    tel.pause_start = MM_PAUSE_START_GA;
+    tel.pause_ende = MM_PAUSE_ENDE_GA;
+    tel
   }
   /// Erzeugt ein MM GA Telegramm mit Pause am Anfang aber ohne Pause vor Wiederholung und Widerholung.
   /// # Arguments
