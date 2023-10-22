@@ -121,9 +121,10 @@ fn main() {
       });
       writeln!(
         buf,
-        "{} {:5}  {}",
+        "[{} {:5} {}] {}",
         Local::now().format("%d.%m.%Y %H:%M:%S%.3f"),
         style.value(record.level()),
+        record.target(),
         record.args()
       )
     })
