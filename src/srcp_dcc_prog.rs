@@ -16,8 +16,9 @@ pub static DCC_SM_TYPE_CVBIT: &str = "CVBIT";
 /// Input Prog Ack Signal GPIO 22 (= Pin 15, RI von RS232)
 const GPIO_PROG_ACK: u16 = 22;
 
-/// Timeout für Quittierungsimpuls vom Dekoder, 100ms mit Reserve
-const DEC_ACK_TIMEOUT: Duration = Duration::from_millis(150);
+/// Timeout für Quittierungsimpuls vom Dekoder, 100ms mit Reserve weil Timeout mit versenden startet,
+/// 5 * Prog Befehl senden dauert auch ca. 60 ms.
+const DEC_ACK_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Read / Write für DccCvTel
 #[derive(PartialEq, Clone, Debug)]
@@ -91,29 +92,30 @@ impl DccProgThread {
     let ack_vorher = self.gpio_prog_ack.read_value().unwrap() == GpioValue::High;
     self.tx_tel.send(dcc_cv_tel.clone()).unwrap();
     if prog_gleis {
+      let mut ack = Some(false);
       //Warten auf Quittierungsimpuls. Dieser sollte nach spätestens 100ms vorhanden sein und min. 5ms lang sein.
       let timeout = Instant::now();
       while (timeout + DEC_ACK_TIMEOUT) > Instant::now() {
         //Impuls ist sicher 5ms lang, also reicht es, alle 0.5ms zu prüfen
         thread::sleep(Duration::from_micros(500));
         if self.gpio_prog_ack.read_value().unwrap() == GpioValue::High {
-          //Warten bis Impuls wieder weg ist.
-          while (timeout + DEC_ACK_TIMEOUT) > Instant::now() {
-            thread::sleep(Duration::from_micros(500));
-            if self.gpio_prog_ack.read_value().unwrap() == GpioValue::Low {
-              //Quittierung, wenn vorher Quittierung nicht anstand ist das falsch
-              if ack_vorher {
-                warn!("DccProgThread send_dcc_cv_tel Dekoder Quittierung vorher anstehend");
-                return None;
-              }
-              info!("DccProgThread send_dcc_cv_tel Dekoder Quittierung OK");
-              return Some(true);
-            }
+          //Immer ganzen Timeout warten auch wenn Impuls erkannt wurde.
+          //Grund: Prog. Paket muss 5 mal gesendet werden, Dekoder darf aber nach 2. Paket antworten.
+          //Damit kann er in einem 5er Paket zweimal Antworten und es muss vermieden werden, dass
+          //zweite Antwort als Antwort auf eventuell nächsten Befehl interpretiert wird.
+          //Quittierung, wenn vorher Quittierung auch schon anstand ist das falsch
+          if ack_vorher {
+            warn!("DccProgThread send_dcc_cv_tel Dekoder Quittierung vorher anstehend");
+            ack = None;
+          }
+          else {
+            info!("DccProgThread send_dcc_cv_tel Dekoder Quittierung OK");
+            ack = Some(true);
           }
         }
       }
-      info!("DccProgThread send_dcc_cv_tel Dekoder Quittierung Timeout");
-      return Some(false);
+      debug!("DccProgThread send_dcc_cv_tel Dekoder Quittierung: {:?}", ack);
+      return ack;
     } else {
       return Some(true);
     }

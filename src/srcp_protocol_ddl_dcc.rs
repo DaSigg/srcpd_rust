@@ -292,10 +292,11 @@ impl DccProtokoll {
     debug!("DCC get_cv_tel {:?}", cvtel);
     //CV's gehen von 1 bis 1024, im Telegramm mit 10 Bit von 0 bis 1023
     let cv = cvtel.cv - 1;
-    //GL Tel. als Basis, Refresh = 1 mal senden. 2 oder 5 mal senden für Write wird bei Write gesetzt
+    //GL Tel. als Basis, Refresh = 1 mal senden.
+    //Die ür Write 2 oder 5 mal OHNE JEDE Pause gesendet werden muss, kann nicht mit Wiederholungen gearbeitet werden,
+    //da dabei immer eine kurze Pause entsteht. Es werden alle Daten kopiert.
     let mut tel = self.get_gl_new_tel(cvtel.adr, true);
-    tel.trigger = true; //DEBUG !!!!!!!!
-                        //Telegramme müssen direkt aufeinander folgen
+    //Telegramme müssen direkt aufeinander folgen
     tel.delay = Duration::ZERO;
     match cvtel.dcc_cv_type {
       DccCvTelType::VerifyBit(val, bitnr) | DccCvTelType::WriteBit(val, bitnr, _) => {
@@ -304,10 +305,6 @@ impl DccProtokoll {
         let write = matches!(cvtel.dcc_cv_type, DccCvTelType::WriteBit(_, _, _));
         let mut xor: u8 = 0;
         self.add_sync(&mut tel, !haupt_gleis);
-        //CV Write Telegramme auf Prog Gleis MÜSSEN 5 mal, bei Hauptgleis 2 mal hintereinander gesendet werden
-        if write {
-          tel.tel_wiederholungen = if haupt_gleis { 2 } else { 5 };
-        }
         //Tel. Format Hauptgleis: Adr - 1110-KKVV VVVV-VVVV 111K-DBBB
         //Tel. Format Proggleis: 0111-KKVV VVVV-VVVV 111K-DBBB
         //Im ersten Byte KK und an Bit Pos 0 & 1 CV Bit 8 und 9
@@ -334,6 +331,15 @@ impl DccProtokoll {
         );
         //XOR
         self.add_xor(&mut tel, xor);
+        //CV Write Telegramme auf Prog Gleis MÜSSEN 5 mal, bei Hauptgleis 2 mal hintereinander gesendet werden
+        let daten_1_tel = tel.daten.last().unwrap().clone();
+        for _ in 1..if haupt_gleis { 2 } else { 5 } {
+          tel
+            .daten
+            .last_mut()
+            .unwrap()
+            .extend_from_slice(daten_1_tel.as_slice());
+        }
       }
       DccCvTelType::VerifyByte(val) | DccCvTelType::WriteByte(val, _) => {
         //Hauptgleisprog. nur bei Write ohne Prog Gleis, alles andere -> Prog Gleis
@@ -341,10 +347,6 @@ impl DccProtokoll {
         let write = matches!(cvtel.dcc_cv_type, DccCvTelType::WriteByte(_, _));
         let mut xor: u8 = 0;
         self.add_sync(&mut tel, !haupt_gleis);
-        //CV Write Telegramme auf Prog Gleis MÜSSEN 5 mal, bei Hauptgleis 2 mal hintereinander gesendet werden
-        if write {
-          tel.tel_wiederholungen = if haupt_gleis { 2 } else { 5 };
-        }
         //Tel. Format Hauptgleis: Adr - 1110-KKVV VVVV-VVVV DDDD-DDDD
         //Tel. Format Proggleis: 0111-KKVV VVVV-VVVV DDDD-DDDD
         //Im ersten Byte KK und an Bit Pos 0 & 1 CV Bit 8 und 9
@@ -368,6 +370,15 @@ impl DccProtokoll {
         self.add_byte(&mut tel, val, &mut xor, false);
         //XOR
         self.add_xor(&mut tel, xor);
+        //CV Write Telegramme auf Prog Gleis MÜSSEN 5 mal, bei Hauptgleis 2 mal hintereinander gesendet werden
+        let daten_1_tel = tel.daten.last().unwrap().clone();
+        for _ in 1..if haupt_gleis { 2 } else { 5 } {
+          tel
+            .daten
+            .last_mut()
+            .unwrap()
+            .extend_from_slice(daten_1_tel.as_slice());
+        }
       }
     }
     tel
