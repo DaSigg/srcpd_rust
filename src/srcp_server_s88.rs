@@ -9,6 +9,7 @@ use std::{
 use crate::srcp_server_types::{
   Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType, SRCPServer,
 };
+use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
 use log::warn;
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 
@@ -40,6 +41,9 @@ pub struct S88 {
   spimode: u32,
   //Anzahl einzulesende Bytes Bus1..4
   number_bytes: [usize; MAX_S88],
+  //Konfiguration Oszi Trigger pro S88 Bus und Feedbacknummer
+  trigger_port: Option<u16>,
+  trigger: [Vec<usize>; MAX_S88],
 }
 
 impl S88 {
@@ -52,7 +56,9 @@ impl S88 {
       spiport: "".to_string(),
       spimode: 1,
       //Für alle 4 S88 Busse
-      number_bytes: [0, 0, 0, 0],
+      number_bytes: [0; MAX_S88],
+      trigger_port: None,
+      trigger: [vec![], vec![], vec![], vec![]],
     }
   }
 
@@ -107,8 +113,29 @@ impl S88 {
     }
     //Damit nur einmal gerechnet werden muss
     let filter_grenzwert = self.repeat / 2;
+    //Wenn Oszi Trigger konfiguriert sind: IO Port öffnen
+    let mut trigger_port: Option<SysFsGpioOutput> = None;
+    if let Some(port) = self.trigger_port {
+      for trigger in &self.trigger {
+        if !trigger.is_empty() {
+          trigger_port = Some(
+            SysFsGpioOutput::open(port)
+              .expect(format!("GPIO für Oszi Trigger konnte nicht geöffnet werden").as_str()),
+          );
+          break;
+        }
+      }
+    }
     //Und ab an die Arbeit, einlesen, auswerten, Veränderungen melden, warten und wieder von vorn ...
     loop {
+      //Wenn ein Triggerport konfiguriert ist: zu Beginn mal auf 0 setzen.
+      if trigger_port.is_some() {
+        trigger_port
+          .as_mut()
+          .unwrap()
+          .set_value(GpioValue::Low)
+          .unwrap();
+      }
       //SPI Einlesen
       for spi_bus in 0..MAX_S88 {
         if spidevs[spi_bus].is_some() {
@@ -169,6 +196,19 @@ impl S88 {
                 }
                 Ok(_) => {}
               }
+            }
+            //Wenn ein Trigger für diesen FB konfiguriert ist: bei jeder Veränderung (ohne Filter) gegenüber gespeichertem (gefiltertem) Wert senden.
+            if trigger_port.is_some()
+              && self.trigger[spi_bus].contains(&fb_nr)
+              && (s88_states[spi_bus][fb_nr]
+                != ((s88_input_buffer[spi_bus][akt_wiederhol_index][byte_nr] & BIT_VALUES[bit_nr])
+                  != 0))
+            {
+              trigger_port
+                .as_mut()
+                .unwrap()
+                .set_value(GpioValue::High)
+                .unwrap();
             }
           }
         }
@@ -301,6 +341,9 @@ impl SRCPServer for S88 {
   /// number_fb_2 Anzahl S88 Module (=16 Bit) an 2. S88 Bus
   /// number_fb_3 Anzahl S88 Module (=16 Bit) an 3. S88 Bus
   /// number_fb_4 Anzahl S88 Module (=16 Bit) an 4. S88 Bus
+  /// Optional:
+  /// trigger_fb_1, trigger_fb_2, trigger_fb_3, trigger_fb_4
+  /// mit Liste der FB's bei deren veränderung ein Oszi Triggerimpuls ausgegeben werden soll.
   fn init(
     &mut self, busnr: usize, config_file_bus: &HashMap<String, Option<String>>,
   ) -> Result<(), String> {
@@ -340,6 +383,7 @@ impl SRCPServer for S88 {
       Err("S88 spimode muss 1 oder 2 sein")?;
     }
     for i in 0..self.number_bytes.len() {
+      //Anzahl S88 Module pro S88 Bus
       let name = format!("number_fb_{}", i + 1);
       self.number_bytes[i] = config_file_bus
         .get(&name)
@@ -358,6 +402,43 @@ impl SRCPServer for S88 {
           self.number_bytes[i]
         );
         self.number_bytes[i] = S88_MAXPORTSB;
+      }
+      //Optionale Oszi Trigger pro S88 Bus
+      if let Some(trigger_port_option) = config_file_bus.get("trigger_port") {
+        if let Some(trigger_port_port) = trigger_port_option {
+          if let Ok(trigger_port_port_nr) = trigger_port_port.parse::<u16>() {
+            self.trigger_port = Some(trigger_port_port_nr);
+            //Wenn ein Triggerport definiert ist, dann macht es Sinn, die restliche Trigger Konfiguration zu verarbeiten
+            let name = format!("trigger_fb_{}", i + 1);
+            if let Some(trigger_fb_option) = config_file_bus.get(&name) {
+              if let Some(trigger_fb) = trigger_fb_option {
+                for trigger in trigger_fb.split(",") {
+                  if let Ok(fb_nr) = trigger.parse::<usize>() {
+                    //Auf SRCP beginnen die FB Nummern bei 1
+                    if (fb_nr > 0) && (fb_nr <= self.number_bytes[i] * 16) {
+                      self.trigger[i].push(fb_nr - 1);
+                    } else {
+                      warn!(
+                        "S88 Bus {}: Ungültige Trigger Konfiguration FB Nummer: {}. Erlaubt 1 bis {}.",
+                        i + 1,
+                        trigger,
+                        self.number_bytes[i] * 16
+                      );
+                    }
+                  } else {
+                    warn!(
+                      "S88 Bus {}: Ungültige Trigger Konfiguration: {}.",
+                      i + 1,
+                      trigger
+                    );
+                  }
+                }
+              }
+            }
+          } else {
+            warn!("S88 Bus: Triggerport muss eine poistive Zahl sein.");
+          }
+        }
       }
     }
     Ok(())

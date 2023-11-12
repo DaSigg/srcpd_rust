@@ -585,7 +585,7 @@ impl MfxProtokoll {
     //B=2 Bit Anzahl Bytes 00=1, 01=2, 10=4, 11=8 (Beim Schreiben unterstützen Dekoder aber nur ein Byte, hier ist jedoch alles implementiert)
     //D=8(bis 64) Bit Daten zum Schreiben
     //C=Checksumme
-    let mut ddl_tel = self.get_gl_new_tel(tel.adr, true); //Refresh->nur einmaliges Senden
+    let mut ddl_tel = self.get_gl_new_tel(tel.adr, true, tel.trigger); //Refresh->nur einmaliges Senden
     self.add_start_sync(&mut ddl_tel);
     let mut crc = self.add_adr(tel.adr, &mut ddl_tel);
     self.add_bits(
@@ -704,8 +704,9 @@ impl DdlProtokoll for MfxProtokoll {
   ///           wird zum sofort senden zurückgegeben.
   ///           false wenn Power aus, nie direkte Ausgabe notwendiges Init Telegramm, dieses muss vor nächstem
   ///           GL Befehl ausgegeben werden.
+  /// * trigger - Oszi Trigger?
   fn init_gl(
-    &mut self, adr: u32, uid: Option<u32>, funk_anz: usize, power: bool,
+    &mut self, adr: u32, uid: Option<u32>, funk_anz: usize, power: bool, trigger: bool,
   ) -> Option<DdlTel> {
     self.uid[adr as usize] = uid.unwrap();
     self.funk_anz[adr as usize] = funk_anz;
@@ -714,7 +715,7 @@ impl DdlProtokoll for MfxProtokoll {
     self.new_sid[adr as usize] = true;
     if power {
       //SID Zuordnungstelegramm kann gleich ausgegeben werden
-      let mut ddl_tel = self.get_gl_new_tel(adr, false);
+      let mut ddl_tel = self.get_gl_new_tel(adr, false, trigger);
       //Nur SID Telegramm ist relevant, kein weiteres notwendig
       ddl_tel.daten.truncate(1);
       Some(ddl_tel)
@@ -756,7 +757,8 @@ impl DdlProtokoll for MfxProtokoll {
   /// * adr - Adresse der Lok zur Erkennung, ob noch SID Zuordung gesendet werden muss
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
-  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel {
+  /// * trigger - Oszi Trigger?
+  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool, trigger: bool) -> DdlTel {
     let mut ddl_tel = DdlTel::new(
       adr,
       SPI_BAUDRATE_MFX_2,
@@ -764,6 +766,7 @@ impl DdlProtokoll for MfxProtokoll {
       false,
       MFX_MAX_LEN,
       if refresh { 1 } else { 2 }, //Neue Telegramme 2-fach senden
+      trigger,
     );
     if self.new_sid[adr as usize] {
       self.send_sid(&mut ddl_tel, adr);
@@ -919,9 +922,18 @@ impl DdlProtokoll for MfxProtokoll {
   /// Nicht verwendet, keine GA's in MFX
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
-  fn get_ga_new_tel(&self, adr: u32) -> DdlTel {
+  /// * trigger - Oszi Trigger
+  fn get_ga_new_tel(&self, adr: u32, trigger: bool) -> DdlTel {
     assert!(false, "MFX unterstützt keine GA, Aufruf get_ga_new_tel");
-    DdlTel::new(adr, SPI_BAUDRATE_MFX_2, Duration::ZERO, false, 0, 1)
+    DdlTel::new(
+      adr,
+      SPI_BAUDRATE_MFX_2,
+      Duration::ZERO,
+      false,
+      0,
+      1,
+      trigger,
+    )
   }
 
   /// Erzeugt ein GA Telegramm
@@ -941,7 +953,7 @@ impl DdlProtokoll for MfxProtokoll {
   /// Sobald eine GL vorhanden ist, wird keine Idle mehr gesendet, UID Zentrale wird dann periodisch
   /// über get_protokoll_telegrammme im Intervall INTERVALL_UID gesendet
   fn get_idle_tel(&mut self) -> Option<DdlTel> {
-    let mut ddl_tel = self.get_gl_new_tel(0, true); //Refresh->nur einmaliges Senden
+    let mut ddl_tel = self.get_gl_new_tel(0, true, false); //Refresh->nur einmaliges Senden
     self.send_uid_regcounter(&mut ddl_tel);
     Some(ddl_tel)
   }

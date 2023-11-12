@@ -295,7 +295,7 @@ impl DccProtokoll {
     //GL Tel. als Basis, Refresh = 1 mal senden.
     //Die ür Write 2 oder 5 mal OHNE JEDE Pause gesendet werden muss, kann nicht mit Wiederholungen gearbeitet werden,
     //da dabei immer eine kurze Pause entsteht. Es werden alle Daten kopiert.
-    let mut tel = self.get_gl_new_tel(cvtel.adr, true);
+    let mut tel = self.get_gl_new_tel(cvtel.adr, true, cvtel.trigger);
     //Telegramme müssen direkt aufeinander folgen
     tel.delay = Duration::ZERO;
     match cvtel.dcc_cv_type {
@@ -393,8 +393,9 @@ impl DdlProtokoll for DccProtokoll {
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
   /// * power - nicht verwendet
+  /// * trigger - Oszi Trigger bei Ausgabe?
   fn init_gl(
-    &mut self, adr: u32, _uid: Option<u32>, funk_anz: usize, _power: bool,
+    &mut self, adr: u32, _uid: Option<u32>, funk_anz: usize, _power: bool, _trigger: bool,
   ) -> Option<DdlTel> {
     self.funk_anz[adr as usize] = funk_anz;
     None
@@ -431,7 +432,8 @@ impl DdlProtokoll for DccProtokoll {
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
-  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel {
+  /// * trigger - Oszi Trigger bei Ausgabe?
+  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool, trigger: bool) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_NMRA_2,
@@ -439,6 +441,7 @@ impl DdlProtokoll for DccProtokoll {
       false,
       DCC_MAX_LEN_BASIS + 4 * DCC_MAX_LEN_PRO_BYTE,
       if refresh { 1 } else { 2 }, //Neue Lokkommandos werden immer 2-fach gesendet
+      trigger,
     )
   }
 
@@ -681,7 +684,8 @@ impl DdlProtokoll for DccProtokoll {
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
-  fn get_ga_new_tel(&self, adr: u32) -> DdlTel {
+  /// * trigger - Oszi Trigger?
+  fn get_ga_new_tel(&self, adr: u32, trigger: bool) -> DdlTel {
     DdlTel::new(
       adr,
       SPI_BAUDRATE_NMRA_2,
@@ -689,6 +693,7 @@ impl DdlProtokoll for DccProtokoll {
       false,
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
       2, //GA wird immer nur bei Bedarf gesendet, kein Refresh. Deshalb immer 2-fach senden
+      trigger,
     )
   }
   /// Erzeugt ein GA Telegramm
@@ -739,6 +744,7 @@ impl DdlProtokoll for DccProtokoll {
       false,
       DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
       1,
+      false,
     );
     self.add_sync(&mut ddl_idle_tel, false);
     let mut xor: u8 = 0;
@@ -814,6 +820,7 @@ impl DdlProtokoll for DccProtokoll {
         false,
         DCC_MAX_LEN_BASIS + 2 * DCC_MAX_LEN_PRO_BYTE,
         1,
+        false,
       );
       self.add_sync(&mut ddl_reset_tel, false);
       let mut xor: u8 = 0;

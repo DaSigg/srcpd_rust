@@ -19,12 +19,15 @@ struct GAInit {
   value: [bool; 2],
   //Gewähltes Protokoll
   protokoll: DdlProtokolle,
+  //Oszi Trigger?
+  trigger: bool,
 }
 impl GAInit {
-  fn new(protokoll: DdlProtokolle) -> GAInit {
+  fn new(protokoll: DdlProtokolle, trigger: bool) -> GAInit {
     GAInit {
       value: [false, false],
       protokoll,
+      trigger,
     }
   }
 }
@@ -58,6 +61,10 @@ pub struct DdlGA<'a> {
   all_ga: HashMap<u32, GAInit>,
   //Verwaltung aller GA die verzögert ausgegeben oder nach Delayzeit noch automatisch ausgeschaltet werden müssen
   all_ga_delay: Vec<GADelay>,
+  ///Für welche GL's soll ein Oszi Trigger ausgegeben werden?
+  trigger: Vec<u32>,
+  ///Und Port für Oszi trigger
+  trigger_port: Option<u16>,
 }
 
 impl DdlGA<'_> {
@@ -67,18 +74,26 @@ impl DdlGA<'_> {
   /// * tx - Sender für Info Messages / Antworten an SRCP Clients
   /// * spidev - geöffnetes Spidev zur Ausgabe an Booster
   /// * all_protokolle - Alle vorhandenen Protokollimplementierungen mit allen Versionen
+  /// * trigger_port - Oszi Triggerport aus Konfigfile
+  /// * trigger_adr - Oszi Trigger Adressen aus Konfigfile
   pub fn new(
     bus: usize, tx: Sender<SRCPMessage>, spidev: &Option<Spidev>,
-    all_protokolle: HashMapProtokollVersion,
+    all_protokolle: HashMapProtokollVersion, trigger_port: Option<String>,
+    trigger_adr: Option<String>,
   ) -> DdlGA {
-    DdlGA {
+    let mut result = DdlGA {
       bus,
       tx,
       spidev,
       all_protokolle,
       all_ga: HashMap::new(),
       all_ga_delay: Vec::new(),
-    }
+      trigger: vec![],
+      trigger_port: None,
+    };
+    result.trigger_port = result.eval_trigger_port_config(trigger_port);
+    result.trigger = result.eval_trigger_config(trigger_adr);
+    result
   }
 
   /// GET und SET (ohne Values für SET) validieren
@@ -166,17 +181,18 @@ impl DdlGA<'_> {
   /// * port - GA Port
   /// * value - Gewünschter Output Zustand
   fn send_ga(&mut self, adr: u32, port: usize, value: bool) {
+    let mut ga = self.all_ga.get_mut(&adr).unwrap();
     //Neuen Zustand speichern
-    self.all_ga.get_mut(&adr).unwrap().value[port] = value;
-    let protokoll = self.all_ga[&adr].protokoll;
+    ga.value[port] = value;
+    let protokoll = ga.protokoll;
     //Zum Booster Versenden, erstes passendes Protokoll verwenden, keine Versionsangabe für GA
     let protokoll = self.all_protokolle[&protokoll].values().next().unwrap();
-    let mut ddl_tel = protokoll.borrow().get_ga_new_tel(adr);
+    let mut ddl_tel = protokoll.borrow().get_ga_new_tel(adr, ga.trigger);
     protokoll
       .borrow_mut()
       .get_ga_tel(adr, port, value, &mut ddl_tel);
     //Es ist nur ein Telegramm, keine Behandlung verzögertes Senden notwendig
-    <DdlGA<'_> as SRCPDeviceDDL>::send(self.spidev, &mut ddl_tel);
+    <DdlGA<'_> as SRCPDeviceDDL>::send(self.spidev, &mut ddl_tel, self.trigger_port);
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr, port, value);
   }
@@ -364,7 +380,9 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         };
         //Adresse
         let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
-        self.all_ga.insert(adr, GAInit::new(protokoll));
+        self
+          .all_ga
+          .insert(adr, GAInit::new(protokoll, self.trigger.contains(&adr)));
         //INFO <bus> GA <adr> <protokoll>
         self
           .tx

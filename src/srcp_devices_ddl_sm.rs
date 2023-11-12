@@ -20,6 +20,8 @@ pub struct DdlSM {
   gl_ga_prot_names: HashMap<String, (String, String)>,
   //Aktuell verwendetes SM Protokoll und Version, durch INIT gesetzt.
   sm_protokoll: Option<(DdlProtokolle, String)>,
+  ///Für welche SM's soll ein Oszi Trigger ausgegeben werden?
+  trigger: Vec<u32>,
 }
 
 impl DdlSM {
@@ -28,8 +30,10 @@ impl DdlSM {
   /// * bus - SRCP Bus auf dem dieses Device arbeitet
   /// * tx - Sender für Info Messages / Antworten an SRCP Clients
   /// * all_protokolle - Alle vorhandenen Protokollimplementierungen mit allen Versionen
+  /// * trigger_adr - Oszi Trigger Adressen aus Konfigfile
   pub fn new(
     bus: usize, tx: Sender<SRCPMessage>, all_protokolle: HashMapProtokollVersion,
+    trigger_adr: Option<String>,
   ) -> DdlSM {
     let mut gl_ga_prot_names: HashMap<String, (String, String)> = HashMap::new();
     gl_ga_prot_names.insert(
@@ -40,13 +44,16 @@ impl DdlSM {
       "MFX".to_string(),
       (DdlProtokolle::Mfx.to_string(), "0".to_string()),
     );
-    DdlSM {
+    let mut result = DdlSM {
       bus,
       tx,
       all_protokolle,
       gl_ga_prot_names,
       sm_protokoll: None,
-    }
+      trigger: vec![],
+    };
+    result.trigger = result.eval_trigger_config(trigger_adr);
+    result
   }
 }
 
@@ -236,6 +243,7 @@ impl SRCPDeviceDDL for DdlSM {
           para: param,
           val: SmReadWriteType::Read,
           session_id: cmd_msg.session_id.unwrap(),
+          trigger: self.trigger.contains(cmd_msg.get_adr().as_ref().unwrap()),
         });
       }
       SRCPMessageType::SET | SRCPMessageType::VERIFY => {
@@ -260,6 +268,7 @@ impl SRCPDeviceDDL for DdlSM {
             SmReadWriteType::Verify(value)
           },
           session_id: cmd_msg.session_id.unwrap(),
+          trigger: self.trigger.contains(cmd_msg.get_adr().as_ref().unwrap()),
         });
       }
     }

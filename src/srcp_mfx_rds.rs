@@ -262,6 +262,8 @@ pub struct MfxCvTel {
   pub cv: u16,
   /// Index (6 Bits)
   pub index: u8,
+  /// Oszi Trigger?
+  pub trigger: bool,
 }
 
 /// Thread zur Ausführung MFX Dekoder Prog. Read/Write Befehlen inkl. Rückmeldungen über RDS.
@@ -497,8 +499,9 @@ impl MfxRdsFeedbackThread {
   /// * cv - Nummer des CV's (10 Bit)
   /// * index - Index im CV (6 Bit)
   /// * byteCount - Anzahl Bytes die Ab diesem CV ausgelesen werden sollen (1, 2, 4, 8)
+  /// * trigger - Oszi Trigger?
   fn read_cv(
-    &mut self, adr: u32, cv: u16, index: u8, byte_count: MfxCvTelBytes,
+    &mut self, adr: u32, cv: u16, index: u8, byte_count: MfxCvTelBytes, trigger: bool,
   ) -> Option<Vec<u8>> {
     self.check_cv_cache(adr);
     let count = byte_count.byte_count();
@@ -531,6 +534,7 @@ impl MfxRdsFeedbackThread {
             byte_count: byte_count.clone(),
             cv,
             index,
+            trigger,
           })
           .unwrap();
         //RDS Rückmeldung einlesen
@@ -555,7 +559,8 @@ impl MfxRdsFeedbackThread {
   /// * cv - Nummer des CV's (10 Bit)
   /// * index - Index im CV (6 Bit)
   /// * value - Die zu schreibenden Bytes.  Vorbereitet 1, 2, 4, 8, aktuelle Dekoder unterstützen aber nur 1 Byte!
-  fn write_cv(&mut self, adr: u32, cv: u16, index: u8, value: &Vec<u8>) {
+  /// * trigger - Oszi Trigger?
+  fn write_cv(&mut self, adr: u32, cv: u16, index: u8, value: &Vec<u8>, trigger: bool) {
     self
       .tx_tel
       .send(MfxCvTel {
@@ -564,6 +569,7 @@ impl MfxRdsFeedbackThread {
         byte_count: MfxCvTelBytes::from_count(value.len()).unwrap(),
         cv,
         index,
+        trigger,
       })
       .unwrap();
     //Cache löschen damit ein Lesen als verify auch tatsächlich gemacht werden muss
@@ -593,13 +599,14 @@ impl MfxRdsFeedbackThread {
   /// # Arguments
   /// * adr - Schienenadresse des Dekoders
   /// * block - Der gesuchte Blocktyp
-  fn find_block(&mut self, adr: u32, block: BlockTypenE) -> Option<(u16, u8, u8)> {
+  /// * trigger - Oszi Trigger?
+  fn find_block(&mut self, adr: u32, block: BlockTypenE, trigger: bool) -> Option<(u16, u8, u8)> {
     debug!("MFX findBlock {:?}", block);
     if block == BlockTypenE::BlockGrundeinstellungen {
       //Der erste Block mit den Dekoder Grunddaten ist immer an CV 0
       let start_cv = 0 as u16;
       //Noch Gruppen Infos auslesen, diese sind immer an Index 4
-      if let Some(val) = self.read_cv(adr, 0, 4, MfxCvTelBytes::Cc2Byte) {
+      if let Some(val) = self.read_cv(adr, 0, 4, MfxCvTelBytes::Cc2Byte, trigger) {
         let anz_gruppen = val[0];
         let anz_ca_in_gruppe = val[1];
         return Some((start_cv, anz_gruppen, anz_ca_in_gruppe));
@@ -617,6 +624,7 @@ impl MfxRdsFeedbackThread {
       BlockTypenE::BlockGrundeinstellungen,
       BlockCaE::CaGrundBlocktab,
       0,
+      trigger,
     ) {
       //Blockliste abarbeiten
       for i in 0..block_liste.len() {
@@ -630,12 +638,14 @@ impl MfxRdsFeedbackThread {
         }
         let start_cv = block_liste[i] as u16 * 4;
         debug!("MFX Blockliste Index={}, Block at CV={}", i, start_cv);
-        if let Some(block_id) = self.read_cv(adr, start_cv, 1, MfxCvTelBytes::Cc1byte) {
+        if let Some(block_id) = self.read_cv(adr, start_cv, 1, MfxCvTelBytes::Cc1byte, trigger) {
           if block_id[0] == block_as_u8 {
             debug!("Block {:?} gefunden an CV={}", block, start_cv);
             //Block gefunden
             //Noch Gruppen Infos auslesen
-            if let Some(block_groesse) = self.read_cv(adr, start_cv, 4, MfxCvTelBytes::Cc2Byte) {
+            if let Some(block_groesse) =
+              self.read_cv(adr, start_cv, 4, MfxCvTelBytes::Cc2Byte, trigger)
+            {
               let anz_gruppen = block_groesse[0];
               let anz_cain_gruppe = block_groesse[1];
               return Some((start_cv, anz_gruppen, anz_cain_gruppe));
@@ -668,15 +678,16 @@ impl MfxRdsFeedbackThread {
   /// * block - Blocktyp in dem nach der CA gesucht wird.
   /// * ca - gesuchte CA im Block
   /// * caIndex - Das wievielte Vorkommen des CA's wird gesucht? Erstes Vorkommen ist die 0
+  /// * trigger - Oszi trigger?
   fn read_ca(
-    &mut self, adr: u32, block: BlockTypenE, ca: BlockCaE, ca_index: u8,
+    &mut self, adr: u32, block: BlockTypenE, ca: BlockCaE, ca_index: u8, trigger: bool,
   ) -> Option<(u16, Vec<u8>)> {
     debug!(
       "MFX readCA adresse={}, block={:?}, ca={:?}\n",
       adr, block, ca
     );
     let (ca_len, ca_id) = ca.value();
-    if let Some(cv) = self.find_ca(adr, block.clone() as u8, ca_id, ca_index) {
+    if let Some(cv) = self.find_ca(adr, block.clone() as u8, ca_id, ca_index, trigger) {
       //CV zu CA gefunden
       debug!("CA {:?} gefunden an CV {}", ca, cv);
       //Ganzer CA auslesen
@@ -685,7 +696,7 @@ impl MfxRdsFeedbackThread {
       if ca_len > 0 {
         for i in 0..=((ca_len - 1) / 4) {
           //Start ab Index 1 (nach CA Typ)
-          if let Some(val) = self.read_cv(adr, cv, 1 + (i * 4), MfxCvTelBytes::Cc4Byte) {
+          if let Some(val) = self.read_cv(adr, cv, 1 + (i * 4), MfxCvTelBytes::Cc4Byte, trigger) {
             result.extend_from_slice(val.as_slice());
           } else {
             //Fehler, Abbruch
@@ -711,17 +722,20 @@ impl MfxRdsFeedbackThread {
   /// * block - Blocktyp in dem nach der CA gesucht wird.
   /// * ca - gesuchte CA im Block
   /// * ca_index - Das wievielte Vorkommen des CA's wird gesucht? Erstes Vorkommen ist die 0
-  fn find_ca(&mut self, adr: u32, block: u8, ca: u8, mut ca_index: u8) -> Option<u16> {
+  /// * trigger - Oszi Trigger?
+  fn find_ca(
+    &mut self, adr: u32, block: u8, ca: u8, mut ca_index: u8, trigger: bool,
+  ) -> Option<u16> {
     debug!(
       "MFX findCA adresse={}, block={}, ca={}, caIndex={}",
       adr, block, ca, ca_index
     );
     if let Some(bl) = BlockTypenE::from(block) {
-      if let Some((mut cv, anz_gruppen, anz_cain_gruppe)) = self.find_block(adr, bl) {
+      if let Some((mut cv, anz_gruppen, anz_cain_gruppe)) = self.find_block(adr, bl, trigger) {
         //Alle CA's in diesem Block durchsuchen
         for _ in 0..=(anz_gruppen * anz_cain_gruppe) {
           //..= um auch den ersten CA mit Blockbeschreibung zu berücksichtigen
-          if let Some(ca_typ) = self.read_cv(adr, cv, 0, MfxCvTelBytes::Cc1byte) {
+          if let Some(ca_typ) = self.read_cv(adr, cv, 0, MfxCvTelBytes::Cc1byte, trigger) {
             //Ist das der gesuchte CA?
             if ca_typ[0] == ca {
               debug!("MFX CA {:?} gefunden an CV {}", ca, cv);
@@ -759,7 +773,8 @@ impl MfxRdsFeedbackThread {
   /// Jede Funktion 32 Bit, jedoch nur die 3 Unterbytes verwendet (Funktionsgruppe, Symbolinfo 1 und 2)
   /// # Arguments
   /// * adresse - Schienenadresse des Dekoders
-  fn read_lok_name_fx(&mut self, adr: u32) -> Option<(String, [u32; MFX_FX_COUNT])> {
+  /// * trigger - Oszi Trigger?
+  fn read_lok_name_fx(&mut self, adr: u32, trigger: bool) -> Option<(String, [u32; MFX_FX_COUNT])> {
     //Lokname
     let name: String;
     if let Some((_cv, name_bin)) = self.read_ca(
@@ -767,6 +782,7 @@ impl MfxRdsFeedbackThread {
       BlockTypenE::BlockGrundeinstellungen,
       BlockCaE::CaGrundLokname,
       0,
+      trigger,
     ) {
       if let Ok(str) = String::from_utf8(name_bin) {
         //Spaces am Schluss abschneiden falls vorhanden
@@ -793,6 +809,7 @@ impl MfxRdsFeedbackThread {
       BlockTypenE::BlockFunktionalitaet,
       BlockCaE::CaFunkSchaltfunktion,
       0,
+      trigger,
     ) {
       //Funktionstypen auslesen
       //Zuerst Start CV des Block BLOCK_FUNKTION_MAPPING ermitteln (in zurückgelesene Blockinfodaten werden nicht benötigt)
@@ -801,14 +818,19 @@ impl MfxRdsFeedbackThread {
         BlockTypenE::BlockFunktionMapping,
         BlockCaE::CaBlockBeschreibung,
         0,
+        trigger,
       ) {
         //Für alle Funktionen die Funktionszuordnungen
         let mut fx: [u32; MFX_FX_COUNT] = [0; MFX_FX_COUNT];
         //Nun haben wir in cv die CV Nummer, an der der BLOCK_FUNKTION_MAPPING startet
         for i in 0..min(funktionen.len(), fx.len()) {
-          if let Some(funktion) =
-            self.read_cv(adr, cv + funktionen[i] as u16, 0, MfxCvTelBytes::Cc4Byte)
-          {
+          if let Some(funktion) = self.read_cv(
+            adr,
+            cv + funktionen[i] as u16,
+            0,
+            MfxCvTelBytes::Cc4Byte,
+            trigger,
+          ) {
             fx[i] = ((funktion[1] as u32) << 16) | ((funktion[2] as u32) << 8) | funktion[3] as u32;
             debug!(
               "F{} {} Gruppe=0{} S1=0{} S2={}",
@@ -857,8 +879,8 @@ impl MfxRdsFeedbackThread {
       let auftrag = self.rx.recv().unwrap();
       match auftrag {
         MfxRdsJob::ReadAllInitParameter { adr } => {
-          //Lokname und Funktionen lesen
-          if let Some((name, fx)) = self.read_lok_name_fx(adr) {
+          //Lokname und Funktionen lesen (nie ein Oszi Trigger, neue Adresse)
+          if let Some((name, fx)) = self.read_lok_name_fx(adr, false) {
             //Alle Init Parameter als String, Lokname kommt in Anführungszeichen
             let mut para: Vec<String> = Vec::new();
             para.push(format!("\"{}\"", name.as_str()));
@@ -879,12 +901,19 @@ impl MfxRdsFeedbackThread {
           let ca = ca_parameter.para[1] as u8;
           let ca_index = ca_parameter.para[2] as u8;
           let index = ca_parameter.para[3] as u8;
-          if let Some(cv) = self.find_ca(ca_parameter.adr, block, ca, ca_index) {
+          if let Some(cv) =
+            self.find_ca(ca_parameter.adr, block, ca, ca_index, ca_parameter.trigger)
+          {
             match ca_parameter.val {
               SmReadWriteType::Read => {
                 //Read
-                if let Some(val) = self.read_cv(ca_parameter.adr, cv, index, MfxCvTelBytes::Cc1byte)
-                {
+                if let Some(val) = self.read_cv(
+                  ca_parameter.adr,
+                  cv,
+                  index,
+                  MfxCvTelBytes::Cc1byte,
+                  ca_parameter.trigger,
+                ) {
                   //Alles OK, gelesener Wert als Antwort zurück senden
                   ca_parameter.val = SmReadWriteType::ResultOk(val[0] as u32);
                 } else {
@@ -897,7 +926,13 @@ impl MfxRdsFeedbackThread {
               }
               SmReadWriteType::Write(val) => {
                 //Write
-                self.write_cv(ca_parameter.adr, cv, index, &vec![val as u8]);
+                self.write_cv(
+                  ca_parameter.adr,
+                  cv,
+                  index,
+                  &vec![val as u8],
+                  ca_parameter.trigger,
+                );
                 //Immer OK, es gibt keine Rückmeldung
                 ca_parameter.val = SmReadWriteType::ResultOk(val);
               }
@@ -905,8 +940,13 @@ impl MfxRdsFeedbackThread {
                 //Ein Verify darf nie aus dem Cache kommen
                 self.clear_cache(ca_parameter.adr, cv, index, 1);
                 //Zuerst Read
-                if let Some(val) = self.read_cv(ca_parameter.adr, cv, index, MfxCvTelBytes::Cc1byte)
-                {
+                if let Some(val) = self.read_cv(
+                  ca_parameter.adr,
+                  cv,
+                  index,
+                  MfxCvTelBytes::Cc1byte,
+                  ca_parameter.trigger,
+                ) {
                   //Alles OK, gelesener Wert vergleichen
                   ca_parameter.val = if val_ver == val[0] as u32 {
                     SmReadWriteType::ResultOk(val[0] as u32)

@@ -42,6 +42,8 @@ pub struct DccCvTel {
   pub dcc_cv_type: DccCvTelType,
   /// CV (10 Bits)
   pub cv: u16,
+  /// Oszi Trigger?
+  pub trigger: bool,
 }
 
 /// Thread zur Ausführung DCC Dekoder Prog. Read/Write/Verify Befehlen inkl. Rückmeldungen Prog.Gleis.
@@ -154,6 +156,7 @@ impl DccProgThread {
             adr: smcmd.adr,
             dcc_cv_type,
             cv: smcmd.para[0] as u16, //Erster Parameter muss CV sein
+            trigger: smcmd.trigger,
           },
           smcmd.prog_gleis,
         );
@@ -169,9 +172,10 @@ impl DccProgThread {
   /// * adr - GL Dekoderadresse.
   /// * cv - CV Nr 1 bis 1024
   /// * bitnr - Die Bitnr 0 bis 7 des auszulesenden Bits
-  fn read_cv_bit(&mut self, adr: u32, cv: u16, bitnr: u8) -> Option<u8> {
+  /// * trigger - Oszi Trigger?
+  fn read_cv_bit(&mut self, adr: u32, cv: u16, bitnr: u8, trigger: bool) -> Option<u8> {
     //Zuerst Ver Bit mit 0
-    let mut dcc_cv_tel: DccCvTel = DccCvTel { adr, dcc_cv_type: DccCvTelType::VerifyBit(false, bitnr), cv };
+    let mut dcc_cv_tel: DccCvTel = DccCvTel { adr, dcc_cv_type: DccCvTelType::VerifyBit(false, bitnr), cv, trigger };
     let result_bit0 = self.send_dcc_cv_tel(&dcc_cv_tel, true);
     //Dann Ver Bit mit 1
     dcc_cv_tel.dcc_cv_type = DccCvTelType::VerifyBit(true, bitnr);
@@ -205,7 +209,7 @@ impl DccProgThread {
       //Ganzes CV Byte, alle Bits durchgehen
       let mut result: u8 = 0;
       for bitnr in 0..=7 {
-        if let Some(bitval) = self.read_cv_bit(smcmd.adr, cv, bitnr) {
+        if let Some(bitval) = self.read_cv_bit(smcmd.adr, cv, bitnr, smcmd.trigger) {
           result |= bitval << bitnr;
         }
         else {
@@ -234,7 +238,7 @@ impl DccProgThread {
     } else {
       //CVBIT
       let bitnr = smcmd.para[1] as u8;
-      return self.read_cv_bit(smcmd.adr, cv, bitnr);
+      return self.read_cv_bit(smcmd.adr, cv, bitnr, smcmd.trigger);
     }
   }
 

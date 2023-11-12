@@ -57,6 +57,11 @@ pub struct DDL {
   timeout_shortcut_power_off: u64,
   //Watchdog aktiviert, automatische Power Ausschaltung wenn 2s lang keine Kommando empfangen wurde
   watchdog: bool,
+  //Oszi Triggerkonfiguration aus Konfigfile
+  trigger_port: Option<String>,
+  trigger_gl: Option<String>,
+  trigger_ga: Option<String>,
+  trigger_sm: Option<String>,
 
   //Daten, werden nicht geklont
   //SPI Bus
@@ -77,6 +82,10 @@ impl Clone for DDL {
       timeout_shortcut_power_off: self.timeout_shortcut_power_off,
       watchdog: self.watchdog,
       spidev: None, //Wird nie geklont
+      trigger_port: self.trigger_port.clone(),
+      trigger_gl: self.trigger_gl.clone(),
+      trigger_ga: self.trigger_ga.clone(),
+      trigger_sm: self.trigger_sm.clone(),
     }
   }
 }
@@ -97,6 +106,10 @@ impl DDL {
       timeout_shortcut_power_off: 0,
       watchdog: false,
       spidev: None,
+      trigger_port: None,
+      trigger_gl: None,
+      trigger_ga: None,
+      trigger_sm: None,
     }
   }
 
@@ -185,6 +198,8 @@ impl DDL {
         tx.clone(),
         &self.spidev,
         all_protokolle.clone(),
+        self.trigger_port.clone(),
+        self.trigger_ga.clone(),
       ))),
     );
     //GL Device
@@ -195,6 +210,8 @@ impl DDL {
         tx.clone(),
         &self.spidev,
         all_protokolle.clone(),
+        self.trigger_port.clone(),
+        self.trigger_gl.clone(),
       ))),
     );
     //SM Device
@@ -204,6 +221,7 @@ impl DDL {
         self.busnr,
         tx.clone(),
         all_protokolle.clone(),
+        self.trigger_sm.clone(),
       ))),
     );
     all_devices
@@ -437,6 +455,18 @@ impl SRCPServer for DDL {
         .ok_or("DDL: timeout_shortcut_power_off muss eine Zahl >= 0 sein")?;
     }
     self.watchdog = config_file_bus.get("watchdog").is_some();
+    if let Some(trigger_port) = config_file_bus.get("trigger_port") {
+      self.trigger_port = trigger_port.clone();
+    }
+    if let Some(trigger_gl) = config_file_bus.get("trigger_gl") {
+      self.trigger_gl = trigger_gl.clone();
+    }
+    if let Some(trigger_ga) = config_file_bus.get("trigger_ga") {
+      self.trigger_ga = trigger_ga.clone();
+    }
+    if let Some(trigger_sm) = config_file_bus.get("trigger_sm") {
+      self.trigger_sm = trigger_sm.clone();
+    }
     Ok(())
   }
 

@@ -476,8 +476,9 @@ impl DdlProtokoll for MMProtokoll {
   /// * funk_anz - Anzahl tatsächlich verwendete Funktionen. Kann, je nach Protokoll, dazu
   ///              verwendet werden, nur Telegramme der verwendeten Funktionen zu senden.
   /// * power - nicht verwendet
+  /// * trigger - Oszi Trigger?
   fn init_gl(
-    &mut self, adr: u32, _uid: Option<u32>, funk_anz: usize, _power: bool,
+    &mut self, adr: u32, _uid: Option<u32>, funk_anz: usize, _power: bool, _trigger: bool,
   ) -> Option<DdlTel> {
     self.funk_anz[adr as usize] = funk_anz;
     None
@@ -520,7 +521,8 @@ impl DdlProtokoll for MMProtokoll {
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
-  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel {
+  /// * trigger - Oszi Trigger?
+  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool, trigger: bool) -> DdlTel {
     let mut tel = DdlTel::new(
       adr,
       SPI_BAUDRATE_MAERKLIN_LOCO_2,
@@ -528,6 +530,7 @@ impl DdlProtokoll for MMProtokoll {
       true,
       MM_LEN,
       if refresh { 1 } else { 2 }, //Neue Kommandos 2-fach senden
+      trigger,
     );
     tel.pause_start = MM_PAUSE_START_GL;
     tel.pause_ende = MM_PAUSE_ENDE_GL;
@@ -616,7 +619,8 @@ impl DdlProtokoll for MMProtokoll {
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
-  fn get_ga_new_tel(&self, adr: u32) -> DdlTel {
+  /// * trigger - Oszi Trigger?
+  fn get_ga_new_tel(&self, adr: u32, trigger: bool) -> DdlTel {
     //Neue neue Kommandos, kein Refresh -> 2-fach senden
     let mut tel = DdlTel::new(
       adr,
@@ -625,6 +629,7 @@ impl DdlProtokoll for MMProtokoll {
       false,
       MM_LEN,
       2,
+      trigger,
     );
     tel.pause_start = MM_PAUSE_START_GA;
     tel.pause_ende = MM_PAUSE_ENDE_GA;
@@ -655,7 +660,7 @@ impl DdlProtokoll for MMProtokoll {
   /// Return None wenn kein Idle Telegramm vorhanden ist
   fn get_idle_tel(&mut self) -> Option<DdlTel> {
     //Idle Telegramm MM ist Telegramm an nie verwendete Lok Adresse 80 (GL Adresse 80 wird als eigentliche Adr 0 ausgegeben)
-    let mut ddl_idle_tel = self.get_gl_new_tel(80, false);
+    let mut ddl_idle_tel = self.get_gl_new_tel(80, false, false);
     //Pause am Anfang
     ddl_idle_tel
       .daten

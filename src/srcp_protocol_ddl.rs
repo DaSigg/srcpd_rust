@@ -55,13 +55,14 @@ impl DdlTel {
   /// * delay_only2nd - Wenn mehr als zwei Telegramme und ein "delay" vorhanden sind ist bei true der "delay" nur für 2. Telegramm relevant.
   /// * capacity - Initiale reservierte Grösse für Nutzdaten im ersten erstellten Telegramm
   /// * telWiederholungen - Anzahl Wiederholungen beim Senden des Telegrammes
+  /// * trigger - Oszi Trigger bei Ausgabe?
   pub fn new(
     adr: u32, hz: u32, delay: Duration, delay_only2nd: bool, capacity: usize,
-    tel_wiederholungen: usize,
+    tel_wiederholungen: usize, trigger: bool,
   ) -> DdlTel {
     DdlTel {
       adr,
-      trigger: false,
+      trigger,
       tel_wiederholungen,
       hz,
       delay,
@@ -162,8 +163,10 @@ pub trait DdlProtokoll {
   ///           wird zum sofort senden zurückgegeben.
   ///           false wenn Power aus, nie direkte Ausgabe notwendiges Init Telegramm, dieses muss vor nächstem
   ///           GL Befehl ausgegeben werden.
-  fn init_gl(&mut self, adr: u32, uid: Option<u32>, funk_anz: usize, power: bool)
-    -> Option<DdlTel>;
+  /// * trigger - Oszi Trigger bei Ausgabe?
+  fn init_gl(
+    &mut self, adr: u32, uid: Option<u32>, funk_anz: usize, power: bool, trigger: bool,
+  ) -> Option<DdlTel>;
   /// Liefert die max. erlaubte Lokadresse
   fn get_gl_max_adr(&self) -> u32;
   /// Wieviele Speedsteps werden vom Protokoll unterstützt
@@ -180,7 +183,8 @@ pub trait DdlProtokoll {
   /// * adr - Adresse der Lok, keine Verwendunbg, nur Debug Support
   /// * refresh - Wenn true: Aufruf aus Refres Cycle, einmalige Telegramm Versendung,
   ///             Wenn false: Aufruf wegen neuem Lokkommando, mehrmaliges Versenden
-  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool) -> DdlTel;
+  /// * trigger - Oszi Trigger bei Ausgabe?
+  fn get_gl_new_tel(&mut self, adr: u32, refresh: bool, trigger: bool) -> DdlTel;
   /// Erzeugt das Basis Telegramm für GL.
   /// - Fahren
   /// - Basisfunktionen F0 bis "get_Anz_F_Basis". Es wedren hier nur diese Funktionen übernommen!
@@ -208,7 +212,8 @@ pub trait DdlProtokoll {
   /// Liefert ein leeres GA Telegramm zur Verwendung in "get_ga_tel".
   /// # Arguments
   /// * adr - Adresse GA, keine Verwendunbg, nur Debug Support
-  fn get_ga_new_tel(&self, adr: u32) -> DdlTel;
+  /// * trigger - Oszi Trigger?
+  fn get_ga_new_tel(&self, adr: u32, trigger: bool) -> DdlTel;
   /// Erzeugt ein GA Telegramm
   /// # Arguments
   /// * adr - Adresse des Schaltdekoders
@@ -301,6 +306,8 @@ pub struct SmReadWrite {
   pub val: SmReadWriteType,
   /// Session ID von der das Kommando kam um eine Antwort an diese zu senden.
   pub session_id: u32,
+  /// Oszi trigger?
+  pub trigger: bool,
 }
 
 /// Typen zu Verwaltung der Protokolle

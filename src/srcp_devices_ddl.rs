@@ -4,6 +4,7 @@ use std::{
 };
 
 use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
+use log::warn;
 use spidev::{Spidev, SpidevTransfer};
 
 use crate::{srcp_protocol_ddl::DdlTel, srcp_server_types::SRCPMessage};
@@ -44,9 +45,11 @@ pub trait SRCPDeviceDDL {
   }
   /// Senden von Schienentelegrammen über SPI Bus
   /// Das gesendete Teleramm wird aus "ddl_tel" gelöscht.
+  /// # Arguments
   /// * spidev - Geöffnetes SPI interface über das Telegramme zum Booster gesendet werden können
   /// * ddl_tel - Das zu sendende Telegramm. Es wird hier nur das erste Teleramm gesendet und dann gelöscht.
-  fn send(spidev: &Option<Spidev>, ddl_tel: &mut DdlTel)
+  /// * trigger_port - Oszi trigger Port aus Konfigfile
+  fn send(spidev: &Option<Spidev>, ddl_tel: &mut DdlTel, trigger_port: Option<u16>)
   where
     Self: Sized,
   {
@@ -56,10 +59,9 @@ pub trait SRCPDeviceDDL {
     );
     //Debug Oszi Trigger
     let mut gpio_trigger_out: Option<SysFsGpioOutput> = None;
-    if ddl_tel.trigger {
-      //GPIO12, Pin32 für Trigger
+    if ddl_tel.trigger && trigger_port.is_some() {
       gpio_trigger_out = Some(
-        gpio::sysfs::SysFsGpioOutput::open(12)
+        gpio::sysfs::SysFsGpioOutput::open(trigger_port.unwrap())
           .expect(format!("GPIO für Oszi Trigger konnte nicht geöffnet werden").as_str()),
       );
       gpio_trigger_out
@@ -106,5 +108,38 @@ pub trait SRCPDeviceDDL {
     ddl_tel.daten.remove(0);
     //Wann darf das nächste Telegramm (wenn vorhanden) gesendet werden
     ddl_tel.instant_next = Some(Instant::now() + ddl_tel.delay);
+  }
+
+  /// Auswerten Oszi Trigger Konfiguration.
+  /// Liefert Oszi Triggerport zurück.
+  /// # Arguments
+  /// * port - Port als String aus Konfigfile, None wenn nicht vorhanden
+  fn eval_trigger_port_config(&self, port: Option<String>) -> Option<u16> {
+    if let Some(p) = port {
+      if let Ok(port_nr) = p.parse::<u16>() {
+        return Some(port_nr);
+      } else {
+        warn!("DDL: Ungültiger Oszi Triggerport: {}", p);
+      }
+    }
+    return None;
+  }
+
+  /// Auswerten Oszi Trigger Konfiguration.
+  /// Liefert Oszi Trigger Vector mit allen Adressen für Triggerausgabe zurück
+  /// # Arguments
+  /// * adressen - Liste mit Adressen für Oszi Trigger (gtrennt mit Kommas) aus Konfigfile
+  fn eval_trigger_config(&self, adressen: Option<String>) -> Vec<u32> {
+    let mut result_adressen: Vec<u32> = vec![];
+    if let Some(adr) = adressen {
+      for adresse_str in adr.split(",") {
+        if let Ok(adresse) = adresse_str.parse::<u32>() {
+          result_adressen.push(adresse);
+        } else {
+          warn!("DDL: Ungültiger Oszi Triggeradresse: {}", adresse_str);
+        }
+      }
+    }
+    return result_adressen;
   }
 }

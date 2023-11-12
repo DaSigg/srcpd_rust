@@ -28,7 +28,7 @@ const MIN_ANZ_GL_NO_DELAY: usize = 15;
 /// MM Adresse vorhanden sein wegen Dekoder Prog. Modus.
 const IDLE_COUNT_MM_DCC: usize = 2;
 
-///Verwaltung einer initialisierten GL's
+///Verwaltung einer initialisierten GL
 #[derive(Clone)]
 struct GLInit {
   //Aktuelles Fahrtrichtung
@@ -49,11 +49,14 @@ struct GLInit {
   protokoll_uid: Option<u32>,
   //Optionale Init Parameter (z.B. MFX UID, Name, Funktionen)
   param: Vec<String>,
+  //Oszi Trigger bei Telegrammausgabe?
+  trigger: bool,
 }
 impl GLInit {
   fn new(
     protokoll: DdlProtokolle, protokoll_version: String, protokoll_speedsteps: usize,
     protokoll_number_functions: usize, protokoll_uid: Option<u32>, param: &Vec<String>,
+    trigger: bool,
   ) -> GLInit {
     GLInit {
       protokoll,
@@ -65,6 +68,7 @@ impl GLInit {
       fnkt: 0,
       protokoll_uid,
       param: param.clone(),
+      trigger,
     }
   }
 }
@@ -89,6 +93,10 @@ pub struct DdlGL<'a> {
   ///GL's, die automatisch angemeldet wurden und bei der noch die optionalen Parameter ausgelesen werden
   ///Es wird nur immer eine Lok gleichzeitig angemeldet, wenn eine Lok in SM ist, finden keine Anmeldungen statt.
   gl_param_read: Option<u32>,
+  ///Für welche GL's soll ein Oszi Trigger ausgegeben werden?
+  trigger: Vec<u32>,
+  ///Und Port für Oszi trigger
+  trigger_port: Option<u16>,
 }
 
 impl DdlGL<'_> {
@@ -98,16 +106,19 @@ impl DdlGL<'_> {
   /// * tx - Sender für Info Messages / Antworten an SRCP Clients
   /// * spidev - geöffnetes Spidev zur Ausgabe an Booster
   /// * all_protokolle - Alle vorhandenen Protokollimplementierungen mit allen Versionen
+  /// * trigger_port - Oszi Triggerport aus Konfigfile
+  /// * trigger_adr - Oszi Trigger Adressen aus Konfigfile
   pub fn new(
     bus: usize, tx: Sender<SRCPMessage>, spidev: &Option<Spidev>,
-    all_protokolle: HashMapProtokollVersion,
+    all_protokolle: HashMapProtokollVersion, trigger_port: Option<String>,
+    trigger_adr: Option<String>,
   ) -> DdlGL {
     let mut all_idle_protokolle: Vec<DdlProtokolle> = Vec::new();
     //Zuerst sind mal alle Protokolle nicht verwendet
     for (protokoll, _) in &all_protokolle {
       all_idle_protokolle.push(*protokoll);
     }
-    DdlGL {
+    let mut result = DdlGL {
       bus,
       tx,
       spidev,
@@ -117,7 +128,12 @@ impl DdlGL<'_> {
       all_idle_protokolle,
       tel_buffer: Vec::new(),
       gl_param_read: None,
-    }
+      trigger: vec![],
+      trigger_port: None,
+    };
+    result.trigger_port = result.eval_trigger_port_config(trigger_port);
+    result.trigger = result.eval_trigger_config(trigger_adr);
+    result
   }
 
   /// GET und SET (ohne Values für SET) validieren
@@ -234,7 +250,7 @@ impl DdlGL<'_> {
       .unwrap()
       .borrow_mut();
     //Basis GL Telegram erzeugen und zum Booster Versenden
-    let mut ddl_tel = protokoll.get_gl_new_tel(adr, refresh);
+    let mut ddl_tel = protokoll.get_gl_new_tel(adr, refresh, gl.trigger);
     if doppelt {
       ddl_tel.tel_wiederholungen *= 2;
     }
@@ -259,7 +275,7 @@ impl DdlGL<'_> {
   /// * ddl_tel - Das Telegramm, das gesendet werden soll.
   fn send_tel(&mut self, ddl_tel: &mut DdlTel) {
     while ddl_tel.daten.len() > 0 {
-      <DdlGL<'_> as SRCPDeviceDDL>::send(self.spidev, ddl_tel);
+      <DdlGL<'_> as SRCPDeviceDDL>::send(self.spidev, ddl_tel, self.trigger_port);
 
       //Direktes weitersenden wenn nicht genügend GL's vorhanden sind oder wenn kein Delay verlangt wird.
       if (ddl_tel.daten.len() > 0)
@@ -297,7 +313,7 @@ impl DdlGL<'_> {
       done = true;
       for ddl_tel in self.tel_buffer.iter_mut() {
         if ddl_tel.instant_next.unwrap() <= Instant::now() {
-          <DdlGL<'_> as SRCPDeviceDDL>::send(self.spidev, ddl_tel);
+          <DdlGL<'_> as SRCPDeviceDDL>::send(self.spidev, ddl_tel, self.trigger_port);
           done = false;
         }
       }
@@ -343,6 +359,7 @@ impl DdlGL<'_> {
         number_functions,
         uid,
         param,
+        self.trigger.contains(&adr),
       ),
     );
     self.all_gl.get(&adr).unwrap()
@@ -593,7 +610,13 @@ impl SRCPDeviceDDL for DdlGL<'_> {
           if protokoll.uid() {
             uid = Some(cmd_msg.parameter[5].parse::<u32>().unwrap());
           }
-          protokoll.init_gl(adr, uid, protokoll_number_functions, false); //Annahme Power Off, eventuell notwendiges Init-Tel kommt mit nächstem GL Tel.
+          protokoll.init_gl(
+            adr,
+            uid,
+            protokoll_number_functions,
+            false,
+            self.trigger.contains(&adr),
+          ); //Annahme Power Off, eventuell notwendiges Init-Tel kommt mit nächstem GL Tel.
         }
 
         let new_gl = self
@@ -760,9 +783,13 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                       //Lok gibt es bereits, neue SID Zuordnung auslösen
                       info!("GL: bekannte Lok gefunden UID={}, Adr={}", uid, adr);
                       //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
-                      if let Some(mut ddl_tel) =
-                        p.init_gl(adr, gl.protokoll_uid, gl.protokoll_number_functions, power)
-                      {
+                      if let Some(mut ddl_tel) = p.init_gl(
+                        adr,
+                        gl.protokoll_uid,
+                        gl.protokoll_number_functions,
+                        power,
+                        self.trigger.contains(&adr),
+                      ) {
                         self.send_tel(&mut ddl_tel);
                       }
                       gl_bekannt = true;
@@ -778,7 +805,9 @@ impl SRCPDeviceDDL for DdlGL<'_> {
                       //Es werden mal die im Basistel. enthalten Funktionen als vorhanden angenommen (bei MFX 16).
                       let anz_f = p.get_gl_anz_f_basis();
                       //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
-                      if let Some(mut ddl_tel) = p.init_gl(adr, Some(uid), anz_f, power) {
+                      if let Some(mut ddl_tel) =
+                        p.init_gl(adr, Some(uid), anz_f, power, self.trigger.contains(&adr))
+                      {
                         self.send_tel(&mut ddl_tel);
                       }
                       //GL mal anmelden, jeweils max. vom Protokoll unterstützte Parameter verwenden
