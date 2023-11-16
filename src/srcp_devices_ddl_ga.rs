@@ -181,7 +181,7 @@ impl DdlGA<'_> {
   /// * port - GA Port
   /// * value - Gewünschter Output Zustand
   fn send_ga(&mut self, adr: u32, port: usize, value: bool) {
-    let mut ga = self.all_ga.get_mut(&adr).unwrap();
+    let ga = self.all_ga.get_mut(&adr).unwrap();
     //Neuen Zustand speichern
     ga.value[port] = value;
     let protokoll = ga.protokoll;
