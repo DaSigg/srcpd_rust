@@ -100,7 +100,6 @@ impl MMProtokoll {
     }
   }
   /// Pause am MM Anfang und MM 4 Adressbits (trinär codiert)
-  /// Adresse 80 wird als 0000 gesendet, die eigentliche Adresse 80 ist der Idlestate, Lok 0 gibt es nicht
   /// # Arguments
   /// * ddl_tel - Telegramm, zu dessen letztem Telegramm die Adressbits hinzugefügtw erden sollen
   /// * adr_dekoder - Adresse, die ergänzt werden soll, LSB wird zuerst gesendet, 0..80 erlaubt.
@@ -113,9 +112,6 @@ impl MMProtokoll {
       .last_mut()
       .unwrap()
       .resize(MM_LEN_PAUSE_START, 0);
-    if adr_dekoder == 80 {
-      adr_dekoder = 0;
-    }
     let mm_bit_l = if ga_timing { MM_BIT_L_GA } else { MM_BIT_L };
     let mm_bit_o = if ga_timing { MM_BIT_O_GA } else { MM_BIT_O };
     for _ in 0..4 {
@@ -261,6 +257,7 @@ impl MMProtokoll {
   /// - Funktionen F0
   /// # Arguments
   /// * adr - Adresse der Lok
+  ///         Adresse 80 wird als 0000 gesendet, die eigentliche Adresse 80 ist der Idlestate, Lok 0 gibt es nicht
   /// * drive_mode - Fahrtrichtung / Nothalt
   /// * speed - aktuelle Geschwindigkeit
   /// * funktionen - Die gewünschten Funktionen, berücksichtigt bis F0
@@ -280,7 +277,9 @@ impl MMProtokoll {
     if speed_used > 0 {
       speed_used += 1; //Speed 1 ist Richtungswechsel, mit Speed 1..14 sind wir damit bei 2..15, mit 1..28 bei 2..29
     }
-    self.add_mm_pause_adr(ddl_tel, adr, false);
+    //GL 80 = MM Adr 0
+    let adr_mm_tel = if adr == 80 { 0 } else { adr };
+    self.add_mm_pause_adr(ddl_tel, adr_mm_tel, false);
     match version {
       MmVersion::V1 => {
         //14 Speeds, F0, rel. Richtung
@@ -427,7 +426,7 @@ impl MMProtokoll {
           );
           //2. Telegramm vorbereiten
           ddl_tel.daten.push(Vec::with_capacity(MM_LEN));
-          self.add_mm_pause_adr(ddl_tel, adr, false);
+          self.add_mm_pause_adr(ddl_tel, adr_mm_tel, false);
         }
         self.add_mm2_fnkt_value(
           ddl_tel,
