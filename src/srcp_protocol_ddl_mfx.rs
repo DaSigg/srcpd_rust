@@ -10,7 +10,9 @@ use log::{info, warn};
 
 use crate::{
   srcp_mfx_rds::{MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob},
-  srcp_protocol_ddl::{DdlProtokoll, DdlTel, GLDriveMode, ResultReadGlParameter, SmReadWrite},
+  srcp_protocol_ddl::{
+    DdlProtokoll, DdlTel, GLDriveMode, ResultNeuAnmeldung, ResultReadGlParameter, SmReadWrite,
+  },
 };
 
 //SPI Baudrate für MFX.
@@ -509,11 +511,11 @@ impl MfxProtokoll {
   /// Auswertung Ergebnis Dekodersuche.
   /// Wenn positives Feedback: weiter mit nächstem Bit, zuerst 0, dann 1.
   /// Wenn 32 Bit gefunden -> neuer Dekoder gefunden.
-  /// Liefert None zurück wenn nichts gefunden wurde, Some<UID> wenn ein neuer Dekoder erkannt wurde.
+  /// Ergebnis: siehe "ResultNeuAnmeldung".
   /// # Arguments
   /// * daten_rx: parallel zum Senden eingelesene Daten, Bit = 1 = RDS Feedback war vorhanden
-  fn eval_send_search_new_decoder(&mut self, daten_rx: &Vec<u8>) -> Option<u32> {
-    let mut result = None;
+  fn eval_send_search_new_decoder(&mut self, daten_rx: &Vec<u8>) -> ResultNeuAnmeldung {
+    let mut result = ResultNeuAnmeldung::None;
     //Rückmeldung wird ers 1ms nach Start Rückmeldefenster ausgewertet da von letzter Schaltflanke
     //noch Schwingungen vorhanden sein könnten die irrtümlich als RDS Signal ausgewertet werden
     const MFX_LEN_PAUSE_1_MS: usize = MFX_LEN_PAUSE_6_4_MS / 6;
@@ -527,16 +529,19 @@ impl MfxProtokoll {
     //War 50% bis PIKO Giruno, hier kommt ein viel schwächeres Signal ... :-(
     if anz_1 >= (((MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS) * 8 / 20) as u32) {
       //Positive Rückmeldung erhalten
+      result = ResultNeuAnmeldung::InProgress;
       //Wenn bereits 32 Bit gefunden -> Neuer Dekoder gefunden
       if self.search_new_dekoder_bits >= 32 {
         if self.search_new_dekoder_uid == 0 {
           warn!("MFX Dekodersuche Fehler. UID 0 wird ignoriert.");
+          result =
+            ResultNeuAnmeldung::Error("MFX Dekodersuche Fehler. UID 0 wird ignoriert.".to_string());
         } else {
           info!(
             "MFX Dekodersuche neu gefunden UID {}",
             self.search_new_dekoder_uid
           );
-          result = Some(self.search_new_dekoder_uid);
+          result = ResultNeuAnmeldung::Ok(self.search_new_dekoder_uid);
           //Und Neuanmeldezähler inkrementieren
           self.reg_counter += 1;
           self.save_registration_counter();
@@ -999,10 +1004,10 @@ impl DdlProtokoll for MfxProtokoll {
   /// Auswertung automatische Dekoderanmeldung (z.B. bei MFX).
   /// Notwendige Telegramme zur Suche müssen über "get_protokoll_telegrammme" ausgegeben und eine Rückmeldung
   /// verlangt werden.
-  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dessen UID zurückgegeben, ansonsten None.
+  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dessen UID zurückgegeben, ansonsten der aktuelle Zustand, siehe "ResultNeuAnmeldung".
   /// # Arguments
   /// * daten_rx : Die beim parallel zum Senden über SPI eingelesenen Daten
-  fn eval_neu_anmeldung(&mut self, daten_rx: &Vec<u8>) -> Option<u32> {
+  fn eval_neu_anmeldung(&mut self, daten_rx: &Vec<u8>) -> ResultNeuAnmeldung {
     self.eval_send_search_new_decoder(daten_rx)
   }
 

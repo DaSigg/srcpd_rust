@@ -85,6 +85,8 @@ pub enum SRCPMessageDevice {
   SM,
   //Power on/off
   Power,
+  //Generic Message (für Zustandsmeldungen über Lokanmeldung vom Server, ansonsten wird GM nicht unterstützt)
+  GM,
 }
 impl ToString for SRCPMessageDevice {
   fn to_string(&self) -> String {
@@ -94,6 +96,7 @@ impl ToString for SRCPMessageDevice {
       SRCPMessageDevice::FB => "FB".to_string(),
       SRCPMessageDevice::SM => "SM".to_string(),
       SRCPMessageDevice::Power => "POWER".to_string(),
+      SRCPMessageDevice::GM => "GM".to_string(),
     }
   }
 }

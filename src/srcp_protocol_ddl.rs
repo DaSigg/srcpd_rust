@@ -142,6 +142,15 @@ pub enum ResultReadGlParameter {
   Ok(Vec<String>),
 }
 
+/// Ergebnis für "eval_neu_anmeldung"
+pub enum ResultNeuAnmeldung {
+  NotSupported,  //Protokoll unterstützt keine automatische Neuanmeldung
+  None,          //Keine Neuanmeldung im Gange
+  InProgress,    //Neuanmeldung im Gange
+  Ok(u32),       //Erfolgreiche Neuanmeldung mit ermittelter UID
+  Error(String), //Neuanmeldung Fehler mit Errortext
+}
+
 /// Schnittstelle für alle Protokolle
 /// Wenn mehrere Versionen eines Protokolles vorhanden sind, dann muss dies bei
 /// der Implementierung berücksichtigt werden, schlussendlich eine Instanz pro
@@ -242,11 +251,11 @@ pub trait DdlProtokoll {
   /// Auswertung automatische Dekoderanmeldung (z.B. bei MFX).
   /// Notwendige Telegramme zur Suche müssen über "get_protokoll_telegrammme" ausgegeben und eine Rückmeldung
   /// verlangt werden.
-  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dessen UID zurückgegeben, ansonsten None.
+  /// Wenn ein neuer Dekoder gefunden wurde, dann wird dessen UID zurückgegeben, ansonsten der aktuelle Zustand, siehe "ResultNeuAnmeldung".
   /// # Arguments
   /// * daten_rx : Die beim parallel zum Senden über SPI eingelesenen Daten
-  fn eval_neu_anmeldung(&mut self, _daten_rx: &Vec<u8>) -> Option<u32> {
-    None
+  fn eval_neu_anmeldung(&mut self, _daten_rx: &Vec<u8>) -> ResultNeuAnmeldung {
+    ResultNeuAnmeldung::NotSupported
   }
   /// Auslesen optionale GL Parameter (z.B. MFX Lokname und Funktionen)
   /// Liefert ResultReadGlParameter::Error zurück, wenn ein Fehler aufgetreten ist oder vom Protokoll nicht untertsützt.

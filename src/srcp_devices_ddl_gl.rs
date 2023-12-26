@@ -11,7 +11,7 @@ use spidev::Spidev;
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
   srcp_protocol_ddl::{
-    DdlProtokoll, DdlProtokolle, DdlTel, GLDriveMode, HashMapProtokollVersion,
+    DdlProtokoll, DdlProtokolle, DdlTel, GLDriveMode, HashMapProtokollVersion, ResultNeuAnmeldung,
     ResultReadGlParameter,
   },
   srcp_server_types::{SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType},
@@ -176,7 +176,9 @@ impl DdlGL<'_> {
   /// * adr - GA Adresse -> Muss gültig, d.h. initialisiert sein
   fn send_info_msg(&self, session_id: Option<u32>, adr: u32) {
     //INFO <bus> GL <addr> <drivemode> <V> <V_max> <f0> . . <fn>
-    let Some(gl) = self.all_gl.get(&adr) else {return;};
+    let Some(gl) = self.all_gl.get(&adr) else {
+      return;
+    };
     let mut param: Vec<String> = vec![
       adr.to_string(),
       gl.direction.to_string(),
@@ -364,6 +366,37 @@ impl DdlGL<'_> {
     );
     self.all_gl.get(&adr).unwrap()
   }
+
+  /// Zustand automatischen GL Neuanmeldung als SRCP Message über Info melden
+  /// # Arguments
+  /// * protokoll - Protokollname das zu dieser Information geführt hat.
+  /// * message - Message die versendet werdne soll
+  fn srcp_info_new_gl_state(&self, protokoll: &String, message: &String) {
+    //INFO <bus> GM <send_to> <reply_to> <MSGTYPE> <MESSAGE>
+    // - bus: aktueller Bus, Abweichung von SRCP Spezifikation, die GM nur für Bus 0 erlaubt!
+    // - send_to, reply_to: immer 0
+    // - MSGTYPE: SRCP_GL_REGISTRATON
+    // - MESSAGE: Info über Zustand der automatischen GL Anmeldung im Format "<protokoll_id>:<Message>"
+    //Alles nach GM sind Parameter
+    let mut parameter: Vec<String> = vec![];
+    parameter.push("0".to_string()); //send_to
+    parameter.push("0".to_string()); //reply_to
+    parameter.push("SRCP_GL_REGISTRATON".to_string());
+    parameter.push(format!("{}:\"{}\"", protokoll, message));
+    self
+      .tx
+      .send(SRCPMessage::new(
+        None,
+        self.bus,
+        SRCPMessageID::Info {
+          info_code: "100".to_string(),
+        },
+        SRCPMessageDevice::GM,
+        parameter,
+      ))
+      .unwrap();
+  }
+
   /// Neue GL als SRCP Info melden
   /// # Arguments
   /// * adr - Adresse der GL.
@@ -577,7 +610,9 @@ impl SRCPDeviceDDL for DdlGL<'_> {
   /// * cmd_msg - Empfangenes Kommando
   /// * power - true wenn Power eingeschaltet, Booster On sind, hier nicht verwendet
   fn execute_cmd(&mut self, cmd_msg: &SRCPMessage, _power: bool) {
-    let SRCPMessageID::Command { msg_type } = cmd_msg.message_id else {return};
+    let SRCPMessageID::Command { msg_type } = cmd_msg.message_id else {
+      return;
+    };
     match msg_type {
       SRCPMessageType::INIT => {
         //Format ist INIT <bus> GL <addr> <protocol> <optional further parameters>
@@ -588,7 +623,9 @@ impl SRCPDeviceDDL for DdlGL<'_> {
         //Adresse
         let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         //Das Protokoll
-        let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) else {return};
+        let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) else {
+          return;
+        };
         //Version
         let protokoll_version = cmd_msg.parameter[2].clone();
         //decoderspeedsteps
@@ -773,57 +810,75 @@ impl SRCPDeviceDDL for DdlGL<'_> {
             //Wenn verlangt wurde, dass ein Ergebnis eingelesen wird -> Auswerten
             if let Some(daten_rx) = &tel.daten_rx {
               //Wenn bereits eine Neuanmeldung einer GL läuft, keine weitere Neuanmeldung parallel
-              if let Some(uid) = p.eval_neu_anmeldung(daten_rx) {
-                //Noch nicht angemeldeter Dekoder gefunden.
-                //Wenn es die GL mit dieser UID schon gibt, dann wird dessen Adressen verwendet.
-                let mut gl_bekannt = false;
-                for adr in 1..=p.get_gl_max_adr() {
-                  if let Some(gl) = self.all_gl.get(&adr) {
-                    if gl.protokoll_uid.is_some() && (gl.protokoll_uid.unwrap() == uid) {
-                      //Lok gibt es bereits, neue SID Zuordnung auslösen
-                      info!("GL: bekannte Lok gefunden UID={}, Adr={}", uid, adr);
-                      //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
-                      if let Some(mut ddl_tel) = p.init_gl(
-                        adr,
-                        gl.protokoll_uid,
-                        gl.protokoll_number_functions,
-                        power,
-                        self.trigger.contains(&adr),
-                      ) {
-                        self.send_tel(&mut ddl_tel);
+              match p.eval_neu_anmeldung(daten_rx) {
+                ResultNeuAnmeldung::NotSupported => {} //Nichts machen
+                ResultNeuAnmeldung::None => {
+                  self.srcp_info_new_gl_state(
+                    &protokoll.to_string(),
+                    &"Keine Neuanmeldung".to_string(),
+                  );
+                }
+                ResultNeuAnmeldung::InProgress => {
+                  self.srcp_info_new_gl_state(
+                    &protokoll.to_string(),
+                    &"Neuanmeldung im Gange".to_string(),
+                  );
+                }
+                ResultNeuAnmeldung::Error(err_text) => {
+                  self.srcp_info_new_gl_state(&protokoll.to_string(), &err_text);
+                }
+                ResultNeuAnmeldung::Ok(uid) => {
+                  //Noch nicht angemeldeter Dekoder gefunden.
+                  //Wenn es die GL mit dieser UID schon gibt, dann wird dessen Adressen verwendet.
+                  let mut gl_bekannt = false;
+                  for adr in 1..=p.get_gl_max_adr() {
+                    if let Some(gl) = self.all_gl.get(&adr) {
+                      if gl.protokoll_uid.is_some() && (gl.protokoll_uid.unwrap() == uid) {
+                        //Lok gibt es bereits, neue SID Zuordnung auslösen
+                        info!("GL: bekannte Lok gefunden UID={}, Adr={}", uid, adr);
+                        //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
+                        if let Some(mut ddl_tel) = p.init_gl(
+                          adr,
+                          gl.protokoll_uid,
+                          gl.protokoll_number_functions,
+                          power,
+                          self.trigger.contains(&adr),
+                        ) {
+                          self.send_tel(&mut ddl_tel);
+                        }
+                        gl_bekannt = true;
+                        break;
                       }
-                      gl_bekannt = true;
-                      break;
                     }
                   }
-                }
-                //Ansonsten die erste freie GL Adresse zuweisen und Initialisieren.
-                if !gl_bekannt {
-                  for adr in 1..=p.get_gl_max_adr() {
-                    if !self.all_gl.contains_key(&adr) {
-                      info!("GL: neue Lok gefunden UID={}, Adr={}", uid, adr);
-                      //Es werden mal die im Basistel. enthalten Funktionen als vorhanden angenommen (bei MFX 16).
-                      let anz_f = p.get_gl_anz_f_basis();
-                      //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
-                      if let Some(mut ddl_tel) =
-                        p.init_gl(adr, Some(uid), anz_f, power, self.trigger.contains(&adr))
-                      {
-                        self.send_tel(&mut ddl_tel);
+                  //Ansonsten die erste freie GL Adresse zuweisen und Initialisieren.
+                  if !gl_bekannt {
+                    for adr in 1..=p.get_gl_max_adr() {
+                      if !self.all_gl.contains_key(&adr) {
+                        info!("GL: neue Lok gefunden UID={}, Adr={}", uid, adr);
+                        //Es werden mal die im Basistel. enthalten Funktionen als vorhanden angenommen (bei MFX 16).
+                        let anz_f = p.get_gl_anz_f_basis();
+                        //Freie Adresse gefunden, Protokollabhängige Aktionen wie SID Zuordnung versenden auslösen
+                        if let Some(mut ddl_tel) =
+                          p.init_gl(adr, Some(uid), anz_f, power, self.trigger.contains(&adr))
+                        {
+                          self.send_tel(&mut ddl_tel);
+                        }
+                        //GL mal anmelden, jeweils max. vom Protokoll unterstützte Parameter verwenden
+                        self.register_new_gl(
+                          adr,
+                          &protokoll,
+                          version,
+                          p.get_gl_max_speed_steps(),
+                          p.get_gl_anz_f(),
+                          Some(uid),
+                          &Vec::new(), //Noch keine weiteren Parameter bekannt.
+                        );
+                        //Neue GL ist mal angemeldet, kann prinzipiell verwendet werden.
+                        //Bevor sie über SRCP INFO gemeldet wird, wird noch versucht optionale Parameter auszulesen.
+                        self.gl_param_read = Some(adr);
+                        break 'protLoop; //Keine weitere parallel Anmeldung
                       }
-                      //GL mal anmelden, jeweils max. vom Protokoll unterstützte Parameter verwenden
-                      self.register_new_gl(
-                        adr,
-                        &protokoll,
-                        version,
-                        p.get_gl_max_speed_steps(),
-                        p.get_gl_anz_f(),
-                        Some(uid),
-                        &Vec::new(), //Noch keine weiteren Parameter bekannt.
-                      );
-                      //Neue GL ist mal angemeldet, kann prinzipiell verwendet werden.
-                      //Bevor sie über SRCP INFO gemeldet wird, wird noch versucht optionale Parameter auszulesen.
-                      self.gl_param_read = Some(adr);
-                      break 'protLoop; //Keine weitere parallel Anmeldung
                     }
                   }
                 }
