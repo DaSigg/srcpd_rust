@@ -1,4 +1,4 @@
-use gpio::{sysfs::SysFsGpioInput, GpioIn, GpioValue};
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use log::{debug, info, warn};
 use std::{
   cmp::min,
@@ -11,11 +11,11 @@ use std::{
 use crate::srcp_protocol_ddl::{SmReadWrite, SmReadWriteType};
 
 /// Input RDS Qual Signal GPIO 23 (= Pin 16)
-const GPIO_MFX_RDS_QAL: u16 = 23;
+const GPIO_MFX_RDS_QAL: u32 = 23;
 /// Input RDS Clk Signal GPIO 24 (= Pin 18)
-const GPIO_MFX_RDS_CLK: u16 = 24;
+const GPIO_MFX_RDS_CLK: u32 = 24;
 /// Input RDS Daten Signal GPIO 25 (= Pin 22)
-const GPIO_MFX_RDS_DAT: u16 = 25;
+const GPIO_MFX_RDS_DAT: u32 = 25;
 
 /// Anzahl MFX Funktionen
 const MFX_FX_COUNT: usize = 16;
@@ -275,9 +275,9 @@ pub struct MfxCvTel {
 ///   Es erfolgt immer eine Antwort auf eine Anfrage, im Fehlerfalle "Error".
 pub struct MfxRdsFeedbackThread {
   /// GPIO's zum Einlesen RDS Rückmeldung
-  gpio_mfx_rds_qal: SysFsGpioInput,
-  gpio_mfx_rds_clk: SysFsGpioInput,
-  gpio_mfx_rds_dat: SysFsGpioInput,
+  gpio_mfx_rds_qal: LineHandle,
+  gpio_mfx_rds_clk: LineHandle,
+  gpio_mfx_rds_dat: LineHandle,
   /// Receiver für Aufträge
   rx: Receiver<MfxRdsJob>,
   /// Sender für Ergenisse der Aufträge, siehe "MfxRdsJobType" als Antwort auf "ReadCA"/"WriteCA"
@@ -305,13 +305,24 @@ impl MfxRdsFeedbackThread {
     rx: Receiver<MfxRdsJob>, tx: Sender<SmReadWrite>, tx_lok_init: Sender<Option<Vec<String>>>,
     tx_tel: Sender<MfxCvTel>,
   ) -> MfxRdsFeedbackThread {
+    let mut chip =
+      Chip::new("/dev/gpiochip0").expect("/dev/gpiochip0 konnte nicht geöffnet werden");
     MfxRdsFeedbackThread {
-      gpio_mfx_rds_qal: SysFsGpioInput::open(GPIO_MFX_RDS_QAL)
-        .expect("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden"),
-      gpio_mfx_rds_clk: SysFsGpioInput::open(GPIO_MFX_RDS_CLK)
-        .expect("GPIO_MFX_RDS_CLK konnte nicht geöffnet werden"),
-      gpio_mfx_rds_dat: SysFsGpioInput::open(GPIO_MFX_RDS_DAT)
-        .expect("GPIO_MFX_RDS_DAT konnte nicht geöffnet werden"),
+      gpio_mfx_rds_qal: chip
+        .get_line(GPIO_MFX_RDS_QAL)
+        .expect("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden")
+        .request(LineRequestFlags::INPUT, 0, "input_mfx_rds_qal")
+        .expect("GPIO_MFX_RDS_QAL konnte nicht als Input geöffnet werden"),
+      gpio_mfx_rds_clk: chip
+        .get_line(GPIO_MFX_RDS_CLK)
+        .expect("GPIO_MFX_RDS_CLK konnte nicht geöffnet werden")
+        .request(LineRequestFlags::INPUT, 0, "input_mfx_rds_clk")
+        .expect("GPIO_MFX_RDS_CLK konnte nicht als Input geöffnet werden"),
+      gpio_mfx_rds_dat: chip
+        .get_line(GPIO_MFX_RDS_DAT)
+        .expect("GPIO_MFX_RDS_DAT konnte nicht geöffnet werden")
+        .request(LineRequestFlags::INPUT, 0, "input_mfx_rds_dat")
+        .expect("GPIO_MFX_RDS_DAT konnte nicht als Input geöffnet werden"),
       rx,
       tx,
       tx_lok_init,
@@ -342,15 +353,15 @@ impl MfxRdsFeedbackThread {
     let mut result = None;
     let mut values = [0 as u8; 8];
     let mut rds_check_summe = 0 as u8;
-    let mut clk_old = self.gpio_mfx_rds_clk.read_value().unwrap();
+    let mut clk_old = self.gpio_mfx_rds_clk.get_value().unwrap();
     //RDS Antwort einlesen und verarbeiten
     while state != StateRdsRx::StateFinal {
       //Warte auf nächsten Clock, positive Flanke
       loop {
         //Daten kommen etwa im 1ms Takt. Mit 100us Wartezeit sollte nichts verpasst werden
         thread::sleep(Duration::from_micros(100));
-        let clk = self.gpio_mfx_rds_clk.read_value().unwrap();
-        if (clk_old == GpioValue::Low) && (clk == GpioValue::High) {
+        let clk = self.gpio_mfx_rds_clk.get_value().unwrap();
+        if (clk_old == 0) && (clk == 1) {
           clk_old = clk;
           //Pos. Flanke erkannt -> Daten einlesen
           //Hinweis zum CLK: der verwendete RDS Chip SC6579 garantiert NICHT, ob die Daten bei pos. oder neg.
@@ -374,11 +385,11 @@ impl MfxRdsFeedbackThread {
           StateRdsRx::StateStart1 => {
             //Während Sync Sequenz sollte RDS Qual Meldung vorhanden sein.
             //Wenn nicht -> von vorne
-            if self.gpio_mfx_rds_qal.read_value().unwrap() == GpioValue::Low {
+            if self.gpio_mfx_rds_qal.get_value().unwrap() == 0 {
               debug!("RDS Sync Abbruch. QUAL=0. 1 count={}", count);
               count = 0;
             } else {
-              if self.gpio_mfx_rds_dat.read_value().unwrap() == GpioValue::High {
+              if self.gpio_mfx_rds_dat.get_value().unwrap() == 1 {
                 //Wieder ein 1 der Sync. Sequenz eingelesen
                 count += 1;
               } else {
@@ -398,7 +409,7 @@ impl MfxRdsFeedbackThread {
             //Erstes 0 wurde bereits gelesen, es wird noch 10 erwartet
             debug!("RDS STATE_START010 count={}.", count);
             if count == 0 {
-              if self.gpio_mfx_rds_dat.read_value().unwrap() == GpioValue::High {
+              if self.gpio_mfx_rds_dat.get_value().unwrap() == 1 {
                 //1 gelesen, alles OK
                 count += 1;
               } else {
@@ -408,7 +419,7 @@ impl MfxRdsFeedbackThread {
                 debug!("RDS STATE_START010 Abbruch -> STATE_START1.");
               }
             } else {
-              if self.gpio_mfx_rds_dat.read_value().unwrap() == GpioValue::High {
+              if self.gpio_mfx_rds_dat.get_value().unwrap() == 1 {
                 //1 gelesen, Abbruch
                 count = 0;
                 state = StateRdsRx::StateStart1;
@@ -422,12 +433,8 @@ impl MfxRdsFeedbackThread {
             }
           }
           StateRdsRx::StateData => {
-            values[count / 8] = (values[count / 8] << 1)
-              | if self.gpio_mfx_rds_dat.read_value().unwrap() == GpioValue::High {
-                1
-              } else {
-                0
-              };
+            values[count / 8] =
+              (values[count / 8] << 1) | self.gpio_mfx_rds_dat.get_value().unwrap();
             count += 1;
             if count >= (len * 8) {
               state = StateRdsRx::StateCheck;
@@ -436,12 +443,7 @@ impl MfxRdsFeedbackThread {
             }
           }
           StateRdsRx::StateCheck => {
-            rds_check_summe = (rds_check_summe << 1)
-              | if self.gpio_mfx_rds_dat.read_value().unwrap() == GpioValue::High {
-                1
-              } else {
-                0
-              };
+            rds_check_summe = (rds_check_summe << 1) | self.gpio_mfx_rds_dat.get_value().unwrap();
             count += 1;
             if count >= 8 {
               //Checksumme vollständig eingelesen

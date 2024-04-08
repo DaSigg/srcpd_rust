@@ -9,7 +9,7 @@ use std::{
 use crate::srcp_server_types::{
   Message, SRCPMessage, SRCPMessageDevice, SRCPMessageID, SRCPMessageType, SRCPServer,
 };
-use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use log::warn;
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 
@@ -42,7 +42,7 @@ pub struct S88 {
   //Anzahl einzulesende Bytes Bus1..4
   number_bytes: [usize; MAX_S88],
   //Konfiguration Oszi Trigger pro S88 Bus und Feedbacknummer
-  trigger_port: Option<u16>,
+  trigger_port: Option<u32>,
   trigger: [Vec<usize>; MAX_S88],
 }
 
@@ -114,13 +114,17 @@ impl S88 {
     //Damit nur einmal gerechnet werden muss
     let filter_grenzwert = self.repeat / 2;
     //Wenn Oszi Trigger konfiguriert sind: IO Port öffnen
-    let mut trigger_port: Option<SysFsGpioOutput> = None;
+    let mut trigger_port: Option<LineHandle> = None;
     if let Some(port) = self.trigger_port {
       for trigger in &self.trigger {
         if !trigger.is_empty() {
           trigger_port = Some(
-            SysFsGpioOutput::open(port)
-              .expect(format!("GPIO für Oszi Trigger konnte nicht geöffnet werden").as_str()),
+            Chip::new("/dev/gpiochip0")
+              .expect("/dev/gpiochip0 konnte nicht geöffnet werden")
+              .get_line(port)
+              .expect("GPIO für S88 Oszi Trigger konnte nicht geöffnet werden")
+              .request(LineRequestFlags::OUTPUT, 1, "output_trigger_s88")
+              .expect("GPIO für S88 Oszi Trigger konnte nicht als Output geöffnet werden"),
           );
           break;
         }
@@ -130,11 +134,7 @@ impl S88 {
     loop {
       //Wenn ein Triggerport konfiguriert ist: zu Beginn mal auf 0 setzen.
       if trigger_port.is_some() {
-        trigger_port
-          .as_mut()
-          .unwrap()
-          .set_value(GpioValue::Low)
-          .unwrap();
+        trigger_port.as_mut().unwrap().set_value(0).unwrap();
       }
       //SPI Einlesen
       for spi_bus in 0..MAX_S88 {
@@ -204,11 +204,7 @@ impl S88 {
                 != ((s88_input_buffer[spi_bus][akt_wiederhol_index][byte_nr] & BIT_VALUES[bit_nr])
                   != 0))
             {
-              trigger_port
-                .as_mut()
-                .unwrap()
-                .set_value(GpioValue::High)
-                .unwrap();
+              trigger_port.as_mut().unwrap().set_value(1).unwrap();
             }
           }
         }
@@ -406,7 +402,7 @@ impl SRCPServer for S88 {
       //Optionale Oszi Trigger pro S88 Bus
       if let Some(trigger_port_option) = config_file_bus.get("trigger_port") {
         if let Some(trigger_port_port) = trigger_port_option {
-          if let Ok(trigger_port_port_nr) = trigger_port_port.parse::<u16>() {
+          if let Ok(trigger_port_port_nr) = trigger_port_port.parse::<u32>() {
             self.trigger_port = Some(trigger_port_port_nr);
             //Wenn ein Triggerport definiert ist, dann macht es Sinn, die restliche Trigger Konfiguration zu verarbeiten
             let name = format!("trigger_fb_{}", i + 1);

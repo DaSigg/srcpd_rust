@@ -3,10 +3,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use gpio::{
-  sysfs::{SysFsGpioInput, SysFsGpioOutput},
-  GpioIn, GpioOut, GpioValue,
-};
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 
 use crate::{
   srcp_devices_ddl::SRCPDeviceDDL,
@@ -18,18 +15,18 @@ use crate::{
 /// - RTS GPIO27 (=Pin13)
 /// - DTR GPIO4 (=Pin7)
 /// - DSR GPIO2 (=Pin3)
-const CTS: u16 = 3;
-const RTS: u16 = 27;
-const DTR: u16 = 4;
-const DSR: u16 = 2;
+const CTS: u32 = 3;
+const RTS: u32 = 27;
+const DTR: u32 = 4;
+const DSR: u32 = 2;
 /// Dauer Start- Stop Impuls siggmode
 const DAUER_STOP_IMPULS_SIGG_MODE: Duration = Duration::from_millis(500);
 const DAUER_START_IMPULS_SIGG_MODE: Duration = Duration::from_millis(750);
 /// Verzögerung Power On Meldung um Booster allen Dekoder Zeit zum starten zu geben
 const DELAY_POWER_ON_MELDUNG: Duration = Duration::from_millis(100);
 /// Leitungen zum Booster ON ist 0 wegen Invertierung durch RS232 Treiber 0V->12V / 3.3V->-12V
-const RS232_ON: GpioValue = GpioValue::Low;
-const RS232_OFF: GpioValue = GpioValue::High;
+const RS232_ON: u8 = 0;
+const RS232_OFF: u8 = 1;
 /// Device Power für DDL
 /// Power On Off:
 /// - siggmode: Booster GO message on CTS Line, Booster GO / STOP Command impluse on RTS/DTR
@@ -59,13 +56,13 @@ pub struct DdlPower {
   //Bei Siggmode: Zeitpunkt, ab dem eine automatische Wiedereinschaltung erlaubt ist
   sigg_mode_auto_power_on: Option<Instant>,
   //Booster Go Meldung siggmode
-  gpio_cts_go_in: SysFsGpioInput,
+  gpio_cts_go_in: LineHandle,
   //Booster Go Meldung / Shortcut
-  gpio_dsr_go_in: SysFsGpioInput,
+  gpio_dsr_go_in: LineHandle,
   //Booster Go Ausgang (Impuls bei siggmode)
-  gpio_rts_go_out: SysFsGpioOutput,
+  gpio_rts_go_out: LineHandle,
   //Booster Stop Ausgang Impuls bei siggmode
-  gpio_dtr_stop_out: SysFsGpioOutput,
+  gpio_dtr_stop_out: LineHandle,
 }
 impl DdlPower {
   /// Neue Instanz erstellen
@@ -82,7 +79,9 @@ impl DdlPower {
     bus: usize, tx: Sender<SRCPMessage>, siggmode: bool, dsr_invers: bool, shortcut_delay: u64,
     timeout_shortcut_power_off: u64,
   ) -> DdlPower {
-    let mut result = DdlPower {
+    let mut chip =
+      Chip::new("/dev/gpiochip0").expect("/dev/gpiochip0 konnte nicht geöffnet werden");
+    let result = DdlPower {
       bus: bus,
       tx: tx,
       siggmode: siggmode,
@@ -94,14 +93,26 @@ impl DdlPower {
       impuls_aus: Instant::now(),
       kein_shortcut: Instant::now(),
       sigg_mode_auto_power_on: None,
-      gpio_cts_go_in: gpio::sysfs::SysFsGpioInput::open(CTS)
-        .expect(format!("GPIO {} konnte nicht geöffnet werden", CTS).as_str()),
-      gpio_dsr_go_in: gpio::sysfs::SysFsGpioInput::open(DSR)
-        .expect(format!("GPIO {} konnte nicht geöffnet werden", DSR).as_str()),
-      gpio_rts_go_out: gpio::sysfs::SysFsGpioOutput::open(RTS)
-        .expect(format!("GPIO {} konnte nicht geöffnet werden", RTS).as_str()),
-      gpio_dtr_stop_out: gpio::sysfs::SysFsGpioOutput::open(DTR)
-        .expect(format!("GPIO {} konnte nicht geöffnet werden", DTR).as_str()),
+      gpio_cts_go_in: chip
+        .get_line(CTS)
+        .expect(format!("GPIO {} konnte nicht geöffnet werden", CTS).as_str())
+        .request(LineRequestFlags::INPUT, 0, "input_cts_booster_go")
+        .expect(format!("GPIO {} konnte nicht als Input geöffnet werden", CTS).as_str()),
+      gpio_dsr_go_in: chip
+        .get_line(DSR)
+        .expect(format!("GPIO {} konnte nicht geöffnet werden", DSR).as_str())
+        .request(LineRequestFlags::INPUT, 0, "input_dsr_booster_go")
+        .expect(format!("GPIO {} konnte nicht als Input geöffnet werden", DSR).as_str()),
+      gpio_rts_go_out: chip
+        .get_line(RTS)
+        .expect(format!("GPIO {} konnte nicht geöffnet werden", RTS).as_str())
+        .request(LineRequestFlags::OUTPUT, 0, "output_rts_booster_go")
+        .expect(format!("GPIO {} konnte nicht als Input geöffnet werden", RTS).as_str()),
+      gpio_dtr_stop_out: chip
+        .get_line(DTR)
+        .expect(format!("GPIO {} konnte nicht geöffnet werden", DTR).as_str())
+        .request(LineRequestFlags::OUTPUT, 0, "output_dtr_booster_stop")
+        .expect(format!("GPIO {} konnte nicht als Input geöffnet werden", DTR).as_str()),
     };
     log::debug!(
       "New DdlPower siggmode={}, dsr_invers={}, shortcut_delay={}, timeout_shortcut_power_off={}",
@@ -260,7 +271,7 @@ impl SRCPDeviceDDL for DdlPower {
         self.gpio_rts_go_out.set_value(RS232_OFF).unwrap();
         self.gpio_dtr_stop_out.set_value(RS232_OFF).unwrap();
         //Booster aus Erkennung nach Impulsausgabe
-        let mut booster_on = self.gpio_cts_go_in.read_value().unwrap() == RS232_ON;
+        let mut booster_on = self.gpio_cts_go_in.get_value().unwrap() == RS232_ON;
         //Wenn Timeout für auto Wiedereinschaltung vorhanden ist
         if let Some(sigg_mode_auto_power_on_zeitpunkt) = self.sigg_mode_auto_power_on {
           //Wenn nun Booster aus ist aber ein sein müsste und Timeout für automatische Wiedereinschaltung erreicht ist
@@ -278,7 +289,7 @@ impl SRCPDeviceDDL for DdlPower {
       }
     } else {
       //Kurzschluss- Erkennung
-      let booster_on = (self.gpio_dsr_go_in.read_value().unwrap() == RS232_ON) ^ self.dsr_invers;
+      let booster_on = (self.gpio_dsr_go_in.get_value().unwrap() == RS232_ON) ^ self.dsr_invers;
       //Wenn Booster ein und Rückmeldung ein -> jetzt ist kein Kurzsschluss
       //Aber auch, damit überhaupt eingeschaltet werden kann, wenn Booster aus ist -> kein Kurzschluss
       if booster_on || (!self.power_on) {

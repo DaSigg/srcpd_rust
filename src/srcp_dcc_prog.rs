@@ -4,7 +4,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use gpio::{sysfs::SysFsGpioInput, GpioIn, GpioValue};
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use log::{error, debug, warn, info};
 
 use crate::srcp_protocol_ddl::{SmReadWrite, SmReadWriteType};
@@ -14,7 +14,7 @@ pub static DCC_SM_TYPE_CV: &str = "CV";
 pub static DCC_SM_TYPE_CVBIT: &str = "CVBIT";
 
 /// Input Prog Ack Signal GPIO 22 (= Pin 15, RI von RS232)
-const GPIO_PROG_ACK: u16 = 22;
+const GPIO_PROG_ACK: u32 = 22;
 
 /// Timeout für Quittierungsimpuls vom Dekoder, 100ms mit Reserve weil Timeout mit versenden startet,
 /// 5 * Prog Befehl senden dauert auch ca. 60 ms.
@@ -55,7 +55,7 @@ pub struct DccCvTel {
 ///   Es erfolgt immer eine Antwort auf eine Anfrage, im Fehlerfalle "Error".
 pub struct DccProgThread {
   /// GPIO zum Einlesen Quittungsimpuls
-  gpio_prog_ack: SysFsGpioInput,
+  gpio_prog_ack: LineHandle,
   /// Receiver für Aufträge
   rx: Receiver<SmReadWrite>,
   /// Sender für Ergenisse der Aufträge, als Antwort auf "ReadCV"/"WriteCV"/"Verify"
@@ -74,8 +74,9 @@ impl DccProgThread {
     rx: Receiver<SmReadWrite>, tx: Sender<SmReadWrite>, tx_tel: Sender<DccCvTel>,
   ) -> DccProgThread {
     DccProgThread {
-      gpio_prog_ack: SysFsGpioInput::open(GPIO_PROG_ACK)
-        .expect("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden"),
+      gpio_prog_ack: Chip::new("/dev/gpiochip0").expect("/dev/gpiochip0 konnte nicht geöffnet werden").
+        get_line(GPIO_PROG_ACK).expect("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden").
+        request(LineRequestFlags::INPUT, 0, "input_dcc_prog_ack").expect("GPIO_MFX_RDS_QAL konnte nicht als Input geöffnet werden"),
       rx,
       tx,
       tx_tel,
@@ -91,7 +92,7 @@ impl DccProgThread {
   /// * prog_gleis - true wenn Prog Gleis und Dekoder Quittierung erwartet wird.
   fn send_dcc_cv_tel(&mut self, dcc_cv_tel: &DccCvTel, prog_gleis: bool) -> Option<bool> {
     debug!("DccProgThread tx_tel dcc_cv_tel={:?} prog_gleis={}", dcc_cv_tel, prog_gleis);
-    let ack_vorher = self.gpio_prog_ack.read_value().unwrap() == GpioValue::High;
+    let ack_vorher = self.gpio_prog_ack.get_value().unwrap() == 1;
     self.tx_tel.send(dcc_cv_tel.clone()).unwrap();
     if prog_gleis {
       let mut ack = Some(false);
@@ -100,7 +101,7 @@ impl DccProgThread {
       while (timeout + DEC_ACK_TIMEOUT) > Instant::now() {
         //Impuls ist sicher 5ms lang, also reicht es, alle 0.5ms zu prüfen
         thread::sleep(Duration::from_micros(500));
-        if self.gpio_prog_ack.read_value().unwrap() == GpioValue::High {
+        if self.gpio_prog_ack.get_value().unwrap() == 1 {
           //Immer ganzen Timeout warten auch wenn Impuls erkannt wurde.
           //Grund: Prog. Paket muss 5 mal gesendet werden, Dekoder darf aber nach 2. Paket antworten.
           //Damit kann er in einem 5er Paket zweimal Antworten und es muss vermieden werden, dass

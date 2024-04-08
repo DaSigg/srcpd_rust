@@ -64,7 +64,7 @@ pub struct DdlGA<'a> {
   ///Für welche GL's soll ein Oszi Trigger ausgegeben werden?
   trigger: Vec<u32>,
   ///Und Port für Oszi trigger
-  trigger_port: Option<u16>,
+  trigger_port: Option<u32>,
 }
 
 impl DdlGA<'_> {

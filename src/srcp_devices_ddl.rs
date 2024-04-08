@@ -3,7 +3,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use gpio::{sysfs::SysFsGpioOutput, GpioOut, GpioValue};
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use log::warn;
 use spidev::{Spidev, SpidevTransfer};
 
@@ -49,7 +49,7 @@ pub trait SRCPDeviceDDL {
   /// * spidev - Geöffnetes SPI interface über das Telegramme zum Booster gesendet werden können
   /// * ddl_tel - Das zu sendende Telegramm. Es wird hier nur das erste Teleramm gesendet und dann gelöscht.
   /// * trigger_port - Oszi trigger Port aus Konfigfile
-  fn send(spidev: &Option<Spidev>, ddl_tel: &mut DdlTel, trigger_port: Option<u16>)
+  fn send(spidev: &Option<Spidev>, ddl_tel: &mut DdlTel, trigger_port: Option<u32>)
   where
     Self: Sized,
   {
@@ -58,17 +58,16 @@ pub trait SRCPDeviceDDL {
       "Aufruf SRCPDeviceDDL::send mit leerem ddl_tel"
     );
     //Debug Oszi Trigger
-    let mut gpio_trigger_out: Option<SysFsGpioOutput> = None;
+    let mut gpio_trigger_out: Option<LineHandle> = None;
     if ddl_tel.trigger && trigger_port.is_some() {
       gpio_trigger_out = Some(
-        gpio::sysfs::SysFsGpioOutput::open(trigger_port.unwrap())
-          .expect(format!("GPIO für Oszi Trigger konnte nicht geöffnet werden").as_str()),
+        Chip::new("/dev/gpiochip0")
+          .expect("/dev/gpiochip0 konnte nicht geöffnet werden")
+          .get_line(trigger_port.unwrap())
+          .expect("GPIO für Oszi Trigger konnte nicht geöffnet werden")
+          .request(LineRequestFlags::OUTPUT, 1, "output_trigger_ddl")
+          .expect("GPIO für Oszi Trigger konnte nicht als Output geöffnet werden"),
       );
-      gpio_trigger_out
-        .as_mut()
-        .unwrap()
-        .set_value(GpioValue::High)
-        .unwrap();
     }
     //Verlangte Pause nach Telegramme des letzten gesendten Telegrammes. Gilt für alle Instanzen "SRCPDeviceDDL".
     static mut LETZTE_PAUSE_ENDE: Duration = Duration::ZERO;
@@ -102,7 +101,7 @@ pub trait SRCPDeviceDDL {
     }
     //Oszi Trigger zurücknehmen wenn ausgegeben
     if gpio_trigger_out.is_some() {
-      gpio_trigger_out.unwrap().set_value(GpioValue::Low).unwrap();
+      gpio_trigger_out.unwrap().set_value(0).unwrap();
     }
     //Und jetzt löschen was gesendet wurde
     ddl_tel.daten.remove(0);
@@ -114,9 +113,9 @@ pub trait SRCPDeviceDDL {
   /// Liefert Oszi Triggerport zurück.
   /// # Arguments
   /// * port - Port als String aus Konfigfile, None wenn nicht vorhanden
-  fn eval_trigger_port_config(&self, port: Option<String>) -> Option<u16> {
+  fn eval_trigger_port_config(&self, port: Option<String>) -> Option<u32> {
     if let Some(p) = port {
-      if let Ok(port_nr) = p.parse::<u16>() {
+      if let Ok(port_nr) = p.parse::<u32>() {
         return Some(port_nr);
       } else {
         warn!("DDL: Ungültiger Oszi Triggerport: {}", p);
