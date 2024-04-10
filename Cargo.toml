@@ -1,6 +1,6 @@
 [package]
 name = "srcpd"
-version = "1.4.0"
+version = "1.5.0"
 homepage = "www.siggsoftware.ch"
 edition = "2021"
 authors = ["Daniel Sigg <daniel@siggsoftware.ch>"]
@@ -20,3 +20,4 @@ signal-hook = "0.3.15"
 splitty = "1.0.1"
 fork = "0.1.22"
 chrono = "0.4.31"
+lazy_static = "1.4.0"

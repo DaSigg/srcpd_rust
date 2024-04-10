@@ -197,6 +197,7 @@ fn start(args: impl Iterator<Item = String>) -> Result<(), String> {
   );
   println!("Raspberry PI: in /boot/config.txt core_freq=250 und core_freq_min=250 setzen!");
   println!("Dies ist notwendig um einen stabilen und für S88 keinen zu hohen SPI Clock zu haben.");
+  println!("GPIO Zugriff erfolgt über GPIO ABI, GPIO's dürfen NICHT in sysfs exportiert sein -> echo x >/sys/class/gpio/unexport");
   let cmd_line_config = match CmdLineConfig::parse_cmd_line(args) {
     Ok(v) => v,
     Err(message) => {

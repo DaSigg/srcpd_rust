@@ -7,6 +7,7 @@ use std::{
   time::{Duration, Instant},
 };
 
+use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use log::{error, warn};
 use spidev::{SpiModeFlags, Spidev, SpidevOptions};
 
@@ -31,6 +32,19 @@ const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
 const PATH_REG_COUNTER_FILE: &str = "/etc/srcpd.regcount";
 /// Thread Sleep wenn Power Off ist damit nicht 100% CPU Last vorhanden ist
 const POWER_OFF_CPU_PAUSE: Duration = Duration::from_millis(10);
+/// Input Prog Ack Signal GPIO 22 (= Pin 15, RI von RS232)
+const GPIO_PROG_ACK: u32 = 22;
+
+use lazy_static::lazy_static;
+//Wegen V1 und 2 zwei Instanzen, beide brauchen ACK GPIO Input -> wird einmal hier erstellt.
+lazy_static! {
+  static ref GPIO_PROG_ACK_LINE_HANDLE: LineHandle = Chip::new("/dev/gpiochip0")
+    .expect("/dev/gpiochip0 konnte nicht geöffnet werden")
+    .get_line(GPIO_PROG_ACK)
+    .expect("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden")
+    .request(LineRequestFlags::INPUT, 0, "input_dcc_prog_ack")
+    .expect("GPIO_MFX_RDS_QAL konnte nicht als Input geöffnet werden");
+}
 
 pub struct DDL {
   //Konfiguration
@@ -137,12 +151,18 @@ impl DDL {
       //DCC V1
       dcc_protocols.insert(
         "1",
-        Rc::new(RefCell::new(DccProtokoll::from(DccVersion::V1))),
+        Rc::new(RefCell::new(DccProtokoll::from(
+          DccVersion::V1,
+          &GPIO_PROG_ACK_LINE_HANDLE,
+        ))),
       );
       //DCC V2
       dcc_protocols.insert(
         "2",
-        Rc::new(RefCell::new(DccProtokoll::from(DccVersion::V2))),
+        Rc::new(RefCell::new(DccProtokoll::from(
+          DccVersion::V2,
+          &GPIO_PROG_ACK_LINE_HANDLE,
+        ))),
       );
       all_protocols.insert(DdlProtokolle::Dcc, dcc_protocols);
     }

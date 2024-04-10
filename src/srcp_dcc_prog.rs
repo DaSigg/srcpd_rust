@@ -4,7 +4,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
+use gpio_cdev::LineHandle;
 use log::{error, debug, warn, info};
 
 use crate::srcp_protocol_ddl::{SmReadWrite, SmReadWriteType};
@@ -12,9 +12,6 @@ use crate::srcp_protocol_ddl::{SmReadWrite, SmReadWriteType};
 /// SRCP Type für CV Byte Zugriff
 pub static DCC_SM_TYPE_CV: &str = "CV";
 pub static DCC_SM_TYPE_CVBIT: &str = "CVBIT";
-
-/// Input Prog Ack Signal GPIO 22 (= Pin 15, RI von RS232)
-const GPIO_PROG_ACK: u32 = 22;
 
 /// Timeout für Quittierungsimpuls vom Dekoder, 100ms mit Reserve weil Timeout mit versenden startet,
 /// 5 * Prog Befehl senden dauert auch ca. 60 ms.
@@ -55,7 +52,7 @@ pub struct DccCvTel {
 ///   Es erfolgt immer eine Antwort auf eine Anfrage, im Fehlerfalle "Error".
 pub struct DccProgThread {
   /// GPIO zum Einlesen Quittungsimpuls
-  gpio_prog_ack: LineHandle,
+  gpio_prog_ack: &'static LineHandle,
   /// Receiver für Aufträge
   rx: Receiver<SmReadWrite>,
   /// Sender für Ergenisse der Aufträge, als Antwort auf "ReadCV"/"WriteCV"/"Verify"
@@ -70,13 +67,12 @@ impl DccProgThread {
   /// * rx - Empfang von Aufträge.
   /// * tx - Sender zum versenden er eingelesen Rückmeldungen als Antwort auf "ReadCA"/"WriteCA"
   /// * tx_tel - Sender zum versenden von auszugebenden Telegrammen
+  /// * ack_line_handle - GPIO Handle über das der Programmier ACK Impuls eingelesen werden kann.
   pub fn new(
-    rx: Receiver<SmReadWrite>, tx: Sender<SmReadWrite>, tx_tel: Sender<DccCvTel>,
+    rx: Receiver<SmReadWrite>, tx: Sender<SmReadWrite>, tx_tel: Sender<DccCvTel>, ack_line_handle: &'static LineHandle,
   ) -> DccProgThread {
     DccProgThread {
-      gpio_prog_ack: Chip::new("/dev/gpiochip0").expect("/dev/gpiochip0 konnte nicht geöffnet werden").
-        get_line(GPIO_PROG_ACK).expect("GPIO_MFX_RDS_QAL konnte nicht geöffnet werden").
-        request(LineRequestFlags::INPUT, 0, "input_dcc_prog_ack").expect("GPIO_MFX_RDS_QAL konnte nicht als Input geöffnet werden"),
+      gpio_prog_ack: ack_line_handle,
       rx,
       tx,
       tx_tel,

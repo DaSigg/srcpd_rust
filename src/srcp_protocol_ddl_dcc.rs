@@ -5,6 +5,7 @@ use std::{
   time::Duration,
 };
 
+use gpio_cdev::LineHandle;
 use log::debug;
 
 use crate::{
@@ -137,7 +138,8 @@ impl DccProtokoll {
   /// Neue Instanz erstellen
   /// # Arguments
   /// * version - V1 oder V2
-  pub fn from(version: DccVersion) -> DccProtokoll {
+  /// * ack_line_handle - GPIO Handle über das der Programmier ACK Impuls eingelesen werden kann.
+  pub fn from(version: DccVersion, ack_line_handle: &'static LineHandle) -> DccProtokoll {
     //Channels zur Kommunikation mit Prog Thread
     //-> Aufträge zum Prog Thread
     let (tx_to_prog, rx_in_prog): (Sender<SmReadWrite>, Receiver<SmReadWrite>) = mpsc::channel();
@@ -149,11 +151,17 @@ impl DccProtokoll {
     //<- DCC Tel. Sendeaufträge vom Prog Thread
     let (tx_tel_from_prog, rx_tel_from_prog): (Sender<DccCvTel>, Receiver<DccCvTel>) =
       mpsc::channel();
-    //RDS Einlesethread starten
+    //DCC Programmier Servicemode Thread starten
     thread::Builder::new()
       .name("DCC Prog Thread".to_string())
       .spawn(move || {
-        DccProgThread::new(rx_in_prog, tx_from_prog_read_write_cv, tx_tel_from_prog).execute()
+        DccProgThread::new(
+          rx_in_prog,
+          tx_from_prog_read_write_cv,
+          tx_tel_from_prog,
+          ack_line_handle,
+        )
+        .execute()
       })
       .unwrap();
     DccProtokoll {
