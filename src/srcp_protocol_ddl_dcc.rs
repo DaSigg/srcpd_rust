@@ -32,9 +32,9 @@ static DCC_BIT_0: &'static [u8] = &[0xFF, 0xFF, 0x00, 0x00]; //0
 const MAX_DCC_GL_ADRESSE_KURZ: u32 = 127;
 /// Max. erlaubte GL Lang-Adresse (V2, 14 Bit)
 const MAX_DCC_GL_ADRESSE_LANG: u32 = 10239;
-/// Max. erlaubte GA Adresse gem. NMRA S-9.2.1 Dekoder mit 4*2 Ausgängen, 9 Bit für Dekoder Adresse
-/// Dekoderadresse 0x1FF ist reserviert für Broadcast, es bleiben also inkl. Adr 0 511 Dekoderadressen.
-const MAX_DCC_GA_ADRESSE: u32 = 511 * 4;
+/// Max. erlaubte GA Adresse gem. NMRA S-9.2.1 Dekoder mit 4*2 Ausgängen, 9 Bit für Dekoder Adresse, 2 Bit Adr auf Dekoder.
+/// Dekoderadresse 0x1FF mit Subadr 3 (alle Adr Bits = 1) ist reserviert für E-Stop, es bleiben also inkl. Adr 1 bis 2047
+const MAX_DCC_GA_ADRESSE: u32 = 2047;
 /// Anzahl sync. Bits
 const ANZ_DCC_SYNC: usize = 16;
 /// Anzahl sync. Bits Prog Gleis
@@ -706,17 +706,17 @@ impl DdlProtokoll for DccProtokoll {
   }
   /// Erzeugt ein GA Telegramm
   /// # Arguments
-  /// * adr - Adresse des Schaltdekoders
-  /// * port - Port auf dem Schaltdekoder
+  /// * adr - GA Adresse
+  /// * port - Port auf dem Schaltdekoder 0 / 1
   /// * value - Gewünschter Zustand des Port Ein/Aus
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_ga_tel(&self, adr: u32, port: usize, value: bool, ddl_tel: &mut DdlTel) {
     self.add_sync(ddl_tel, false);
     let mut xor: u8 = 0;
     /* calculate the real address of the decoder and the pair number
-     * of the switch */
-    let address = (adr as usize - 1) / 4;
-    let pairnr = (adr as usize - 1) % 4;
+     * of the switch. Definition, dass Useradr. 1-4 hier die Adresse 1 ist. Die Adr. 2044-2047 sind dann 0.*/
+    let address = if adr < 2044 {(adr as usize - 1) / 4 + 1} else {0};
+    let pairnr = if adr < 2044 {(adr as usize - 1) % 4} else {adr as usize % 4};
     /* address byte: 10AAAAAA (lower 6 bits) */
     self.add_byte(
       ddl_tel,
