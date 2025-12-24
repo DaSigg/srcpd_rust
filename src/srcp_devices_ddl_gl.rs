@@ -112,7 +112,7 @@ impl DdlGL<'_> {
     bus: usize, tx: Sender<SRCPMessage>, spidev: &Option<Spidev>,
     all_protokolle: HashMapProtokollVersion, trigger_port: Option<String>,
     trigger_adr: Option<String>,
-  ) -> DdlGL {
+  ) -> DdlGL<'_> {
     let mut all_idle_protokolle: Vec<DdlProtokolle> = Vec::new();
     //Zuerst sind mal alle Protokolle nicht verwendet
     for (protokoll, _) in &all_protokolle {

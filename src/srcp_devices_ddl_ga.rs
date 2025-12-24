@@ -80,7 +80,7 @@ impl DdlGA<'_> {
     bus: usize, tx: Sender<SRCPMessage>, spidev: &Option<Spidev>,
     all_protokolle: HashMapProtokollVersion, trigger_port: Option<String>,
     trigger_adr: Option<String>,
-  ) -> DdlGA {
+  ) -> DdlGA<'_> {
     let mut result = DdlGA {
       bus,
       tx,

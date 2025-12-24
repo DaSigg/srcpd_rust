@@ -9,7 +9,7 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct DdlTel {
   /// Nur zu Debugzwecken: Adresse (GL oder GA)
-  pub adr: u32,
+  pub _adr: u32,
   /// Und auch zum debuggen: Triggerimpuls für Oszi bei senden dieses Telegrammes ausgeben
   pub trigger: bool,
   /// Wieviel mal wird ein Telegramm direkt hintereinander versendet.
@@ -61,7 +61,7 @@ impl DdlTel {
     tel_wiederholungen: usize, trigger: bool,
   ) -> DdlTel {
     DdlTel {
-      adr,
+      _adr: adr,
       trigger,
       tel_wiederholungen,
       hz,
