@@ -1060,7 +1060,9 @@ impl DdlProtokoll for MfxProtokoll {
   }
 
   /// Dekoderkonfiguration (SM) Start
-  fn sm_init(&mut self) {
+  /// # Arguments
+  /// * smParameter : Optinal weiterer Protokollspezifischer Parameter -> hier nicht verwendet
+  fn sm_init(&mut self, _sm_parameter: Option<&str>) {
     self.sm_aktiv = true;
   }
   /// Dekoderkonfiguration (SM) Ende

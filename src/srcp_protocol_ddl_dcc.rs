@@ -6,7 +6,7 @@ use std::{
 };
 
 use gpio_cdev::LineHandle;
-use log::debug;
+use log::{debug, info};
 
 use crate::{
   srcp_dcc_prog::{DccCvTel, DccCvTelType, DccProgThread, DCC_SM_TYPE_CV, DCC_SM_TYPE_CVBIT},
@@ -126,6 +126,8 @@ pub struct DccProtokoll {
   funk_anz: [usize; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
   /// Ist SM Mode auf diesem Protokoll aktiviert?
   sm_aktiv: bool,
+  /// Ist der SM für GA aktiviert?
+  sm_ga: bool,
   /// Channel für Aufträge an Prog Thread
   tx_to_prog: Sender<SmReadWrite>,
   /// Channel für Antworten von Prog Thread von SM Read/Write
@@ -170,6 +172,7 @@ impl DccProtokoll {
       old_funktionen: [0; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
       funk_anz: [0; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
       sm_aktiv: false,
+      sm_ga: false,
       tx_to_prog,
       rx_from_prog_read_write_cv,
       rx_tel_from_prog,
@@ -300,10 +303,11 @@ impl DccProtokoll {
     debug!("DCC get_cv_tel {:?}", cvtel);
     //CV's gehen von 1 bis 1024, im Telegramm mit 10 Bit von 0 bis 1023
     let cv = cvtel.cv - 1;
-    //GL Tel. als Basis, Refresh = 1 mal senden.
-    //Die ür Write 2 oder 5 mal OHNE JEDE Pause gesendet werden muss, kann nicht mit Wiederholungen gearbeitet werden,
+    //GL Tel. als Basis, wenn GA Modus, dann GA Tel. als Basis
+    //Refresh = 1 mal senden.
+    //Die für Write 2 oder 5 mal OHNE JEDE Pause gesendet werden muss, kann nicht mit Wiederholungen gearbeitet werden,
     //da dabei immer eine kurze Pause entsteht. Es werden alle Daten kopiert.
-    let mut tel = self.get_gl_new_tel(cvtel.adr, true, cvtel.trigger);
+    let mut tel = if self.sm_ga {self.get_ga_new_tel(cvtel.adr, cvtel.trigger)} else {self.get_gl_new_tel(cvtel.adr, true, cvtel.trigger)};
     //Telegramme müssen direkt aufeinander folgen
     tel.delay = Duration::ZERO;
     match cvtel.dcc_cv_type {
@@ -319,7 +323,14 @@ impl DccProtokoll {
         let mut prog_byte_1 = ((cv >> 8) & 0b00000011) as u8 | DCC_PROG_KK_BIT;
         if haupt_gleis {
           //Adresse, nur für Hauptgleis Programmierung
-          xor = self.add_adr(&mut tel, cvtel.adr);
+          xor = if self.sm_ga {
+                  //GA 11 Bit Adressen verwenden
+                  self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
+                }
+                else {
+                 //GL Adressen
+                 self.add_adr(&mut tel, cvtel.adr)
+                };
           prog_byte_1 |= DCC_PROG_HAUPT_GLEIS;
         } else {
           prog_byte_1 |= DCC_PROG_PROG_GLEIS;
@@ -366,7 +377,14 @@ impl DccProtokoll {
           };
         if haupt_gleis {
           //Adresse, nur für Hauptgleis Programmierung
-          xor = self.add_adr(&mut tel, cvtel.adr);
+          xor = if self.sm_ga {
+                  //GA 11 Bit Adressen verwenden
+                  self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
+                }
+                else {
+                 //GL Adressen
+                 self.add_adr(&mut tel, cvtel.adr)
+                };
           prog_byte_1 |= DCC_PROG_HAUPT_GLEIS;
         } else {
           prog_byte_1 |= DCC_PROG_PROG_GLEIS;
@@ -391,7 +409,45 @@ impl DccProtokoll {
     }
     tel
   }
+  
+  /**
+   * Fügt einem DLL Tel. die GA 11 Bit Adresse plus Port und Value (da im 2. Adressbyte enthalten hinzu).
+   * # Arguments
+   * ddl_tel - Das DDL Telegramme, bei dem hinzugefügt werden soll
+   * adr - Die 11 Bit GA Adresse
+   * port - Der zu adressierende Port dieser Adresse (0 / 1)
+   */
+  fn add_ga_adr(&self, ddl_tel: &mut DdlTel, adr: u32, port: usize, value: bool) -> u8 {
+    let mut xor: u8 = 0;
+    /* calculate the real address of the decoder and the pair number
+     * of the switch. Definition, dass Useradr. 1-4 hier die Adresse 1 ist. Die Adr. 2044-2047 sind dann 0.*/
+    let address = if adr < 2044 {(adr as usize - 1) / 4 + 1} else {0};
+    let pairnr = if adr < 2044 {(adr as usize - 1) % 4} else {adr as usize % 4};
+    /* address byte: 10AAAAAA (lower 6 bits) */
+    self.add_byte(
+      ddl_tel,
+      (0b10000000 | (address & 0b00111111)).try_into().unwrap(),
+      &mut xor,
+      false,
+    );
+    /* address and data 1AAACDDO upper 3 address bits are inverted */
+    /* C =  activate, DD = pairnr */
+    self.add_byte(
+      ddl_tel,
+      (0b10000000
+        | ((!address & 0b111000000) >> 2)
+        | (if value { 0b00001000 } else { 0 })
+        | (pairnr << 1)
+        | (port & 0b00000001))
+        .try_into()
+        .unwrap(),
+      &mut xor,
+      false,
+    );
+    xor
+  }
 }
+
 impl DdlProtokoll for DccProtokoll {
   /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
   /// Liefert immer None, kein GL Init Tel. notwendig
@@ -712,32 +768,7 @@ impl DdlProtokoll for DccProtokoll {
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_ga_tel(&self, adr: u32, port: usize, value: bool, ddl_tel: &mut DdlTel) {
     self.add_sync(ddl_tel, false);
-    let mut xor: u8 = 0;
-    /* calculate the real address of the decoder and the pair number
-     * of the switch. Definition, dass Useradr. 1-4 hier die Adresse 1 ist. Die Adr. 2044-2047 sind dann 0.*/
-    let address = if adr < 2044 {(adr as usize - 1) / 4 + 1} else {0};
-    let pairnr = if adr < 2044 {(adr as usize - 1) % 4} else {adr as usize % 4};
-    /* address byte: 10AAAAAA (lower 6 bits) */
-    self.add_byte(
-      ddl_tel,
-      (0b10000000 | (address & 0b00111111)).try_into().unwrap(),
-      &mut xor,
-      false,
-    );
-    /* address and data 1AAACDDO upper 3 address bits are inverted */
-    /* C =  activate, DD = pairnr */
-    self.add_byte(
-      ddl_tel,
-      (0b10000000
-        | ((!address & 0b111000000) >> 2)
-        | (if value { 0b00001000 } else { 0 })
-        | (pairnr << 1)
-        | (port & 0b00000001))
-        .try_into()
-        .unwrap(),
-      &mut xor,
-      false,
-    );
+    let xor = self.add_ga_adr(ddl_tel, adr, port, value);
     self.add_xor(ddl_tel, xor);
   }
 
@@ -764,8 +795,18 @@ impl DdlProtokoll for DccProtokoll {
   }
 
   /// Dekoderkonfiguration (SM) Start
-  fn sm_init(&mut self) {
+  /// # Arguments
+  /// * smParameter : Optinal weiterer Protokollspezifischer Parameter
+  ///                 Hier kann GA übergeben werden um den SM für GA zu starten.
+  fn sm_init(&mut self, _sm_parameter: Option<&str>) {
     self.sm_aktiv = true;
+    if let Some(parameter) = _sm_parameter {
+      self.sm_ga = parameter == "GA";
+    }
+    else {
+      self.sm_ga = false;
+    }
+    info!("DDL DCC SM start GA={},{:?}", self.sm_ga, _sm_parameter);
   }
 
   /// Dekoderkonfiguration (SM) Ende

@@ -269,7 +269,9 @@ pub trait DdlProtokoll {
     ResultReadGlParameter::Error
   }
   /// Dekoderkonfiguration (SM) Start
-  fn sm_init(&mut self) {}
+  /// # Arguments
+  /// * smParameter : Optinal weiterer Protokollspezifischer Parameter
+  fn sm_init(&mut self, _sm_parameter: Option<&str>) {}
   /// Dekoderkonfiguration (SM) Ende
   fn sm_term(&mut self) {}
   /// Dekoderkonfiguration (SM) Read/Write Value.
