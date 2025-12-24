@@ -328,8 +328,8 @@ impl DccProtokoll {
                   self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
                 }
                 else {
-                 //GL Adressen
-                 self.add_adr(&mut tel, cvtel.adr)
+                  //GL Adressen
+                  self.add_adr(&mut tel, cvtel.adr)
                 };
           prog_byte_1 |= DCC_PROG_HAUPT_GLEIS;
         } else {
@@ -382,8 +382,8 @@ impl DccProtokoll {
                   self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
                 }
                 else {
-                 //GL Adressen
-                 self.add_adr(&mut tel, cvtel.adr)
+                  //GL Adressen
+                  self.add_adr(&mut tel, cvtel.adr)
                 };
           prog_byte_1 |= DCC_PROG_HAUPT_GLEIS;
         } else {
