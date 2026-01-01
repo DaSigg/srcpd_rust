@@ -111,8 +111,16 @@ const SPEED_STEP_4BIT: usize = 14;
 const SPEED_STEP_5BIT: usize = 29;
 
 pub enum DccVersion {
-  V1, //Kurze Lokadresse bis 127
-  V2, //Lange Lokadresse 128 bis 10239. Bis 127 wird gemäss DCC Standard automatisch auch hier immer mit der kurzen Adresse gearbeitet
+  V1, //Kurze Lokadresse bis 127, GA sind "Einfache Zubehördecoder"
+  V2, //Lange Lokadresse 128 bis 10239. Bis 127 wird gemäss DCC Standard automatisch auch hier immer mit der kurzen Adresse gearbeitet, GA sind "Erweiterte Zubehördecoder"
+}
+
+//enum für Servicemode
+#[derive(Debug)]
+enum ServiceMode {
+  None, //Keiner
+  GL, //für GL
+  GA, //Für Zubehördecoder (Einfaxche oder erweiterte über Version 1 und 2)
 }
 
 pub struct DccProtokoll {
@@ -124,10 +132,8 @@ pub struct DccProtokoll {
   old_funktionen: [u64; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
   /// Anzahl Initialisierte Funktionen
   funk_anz: [usize; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
-  /// Ist SM Mode auf diesem Protokoll aktiviert?
-  sm_aktiv: bool,
-  /// Ist der SM für GA aktiviert?
-  sm_ga: bool,
+  /// Ist SM Mode auf diesem Protokoll aktiviert? Für was?
+  sm_aktiv: ServiceMode,
   /// Channel für Aufträge an Prog Thread
   tx_to_prog: Sender<SmReadWrite>,
   /// Channel für Antworten von Prog Thread von SM Read/Write
@@ -171,8 +177,7 @@ impl DccProtokoll {
       old_drive_mode: [GLDriveMode::Vorwaerts; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
       old_funktionen: [0; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
       funk_anz: [0; MAX_DCC_GL_ADRESSE_LANG as usize + 1],
-      sm_aktiv: false,
-      sm_ga: false,
+      sm_aktiv: ServiceMode::None,
       tx_to_prog,
       rx_from_prog_read_write_cv,
       rx_tel_from_prog,
@@ -307,7 +312,7 @@ impl DccProtokoll {
     //Refresh = 1 mal senden.
     //Die für Write 2 oder 5 mal OHNE JEDE Pause gesendet werden muss, kann nicht mit Wiederholungen gearbeitet werden,
     //da dabei immer eine kurze Pause entsteht. Es werden alle Daten kopiert.
-    let mut tel = if self.sm_ga {self.get_ga_new_tel(cvtel.adr, cvtel.trigger)} else {self.get_gl_new_tel(cvtel.adr, true, cvtel.trigger)};
+    let mut tel = if matches!(self.sm_aktiv, ServiceMode::GL) {self.get_gl_new_tel(cvtel.adr, true, cvtel.trigger)} else {self.get_ga_new_tel(cvtel.adr, cvtel.trigger)};
     //Telegramme müssen direkt aufeinander folgen
     tel.delay = Duration::ZERO;
     match cvtel.dcc_cv_type {
@@ -323,13 +328,13 @@ impl DccProtokoll {
         let mut prog_byte_1 = ((cv >> 8) & 0b00000011) as u8 | DCC_PROG_KK_BIT;
         if haupt_gleis {
           //Adresse, nur für Hauptgleis Programmierung
-          xor = if self.sm_ga {
-                  //GA 11 Bit Adressen verwenden
-                  self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
-                }
-                else {
+          xor = if matches!(self.sm_aktiv, ServiceMode::GL) {
                   //GL Adressen
                   self.add_adr(&mut tel, cvtel.adr)
+                }
+                else {
+                  //GA 11 Bit Adressen verwenden, einfache
+                  self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
                 };
           prog_byte_1 |= DCC_PROG_HAUPT_GLEIS;
         } else {
@@ -377,13 +382,13 @@ impl DccProtokoll {
           };
         if haupt_gleis {
           //Adresse, nur für Hauptgleis Programmierung
-          xor = if self.sm_ga {
-                  //GA 11 Bit Adressen verwenden
-                  self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
-                }
-                else {
+          xor = if matches!(self.sm_aktiv, ServiceMode::GL) {
                   //GL Adressen
                   self.add_adr(&mut tel, cvtel.adr)
+                }
+                else {
+                  //GA 11 Bit Adressen verwenden
+                  self.add_ga_adr(&mut tel, cvtel.adr, 0, true)
                 };
           prog_byte_1 |= DCC_PROG_HAUPT_GLEIS;
         } else {
@@ -412,10 +417,13 @@ impl DccProtokoll {
   
   /**
    * Fügt einem DLL Tel. die GA 11 Bit Adresse plus Port und Value (da im 2. Adressbyte enthalten hinzu).
+   * Protokollversion DccVersion::V1 -> vollständiges Telegramm für "Einfache Zubehördecoder" mit port und value wird erzeugt.
+   * Protokollversion DccVersion::V2 -> Adressteil für "Erweiterte Zubehördecoder" wird erzeugt, 3. Byte muss noch ergänzt werden!
    * # Arguments
    * ddl_tel - Das DDL Telegramme, bei dem hinzugefügt werden soll
    * adr - Die 11 Bit GA Adresse
    * port - Der zu adressierende Port dieser Adresse (0 / 1)
+   * value - true port einschalten, false Port ausschalten
    */
   fn add_ga_adr(&self, ddl_tel: &mut DdlTel, adr: u32, port: usize, value: bool) -> u8 {
     let mut xor: u8 = 0;
@@ -434,13 +442,20 @@ impl DccProtokoll {
     /* C =  activate, DD = pairnr */
     self.add_byte(
       ddl_tel,
-      (0b10000000
-        | ((!address & 0b111000000) >> 2)
-        | (if value { 0b00001000 } else { 0 })
-        | (pairnr << 1)
-        | (port & 0b00000001))
-        .try_into()
-        .unwrap(),
+      match self.version {
+        DccVersion::V1 => 
+          0b10000000
+          | ((!address & 0b111000000) >> 2)
+          | (if value { 0b00001000 } else { 0 })
+          | (pairnr << 1)
+          | (port & 0b00000001),
+        DccVersion::V2 => 
+          ((!address & 0b111000000) >> 2)
+          | (pairnr << 1)
+          | 0b00000001    
+      }
+      .try_into()
+      .unwrap(),
       &mut xor,
       false,
     );
@@ -762,14 +777,51 @@ impl DdlProtokoll for DccProtokoll {
   }
   /// Erzeugt ein GA Telegramm
   /// # Arguments
+  /// Liefert true zurück, wenn Timeout zu r automatischen Abschaltung durch Protokoll / Dekoder übernommen wird.
+  /// Dies ist hier bei V2 (= erweiterte Dekoder) der Fall.
   /// * adr - GA Adresse
   /// * port - Port auf dem Schaltdekoder 0 / 1
-  /// * value - Gewünschter Zustand des Port Ein/Aus
+  /// * value - Gewünschter Zustand des Port Ein/Aus (0/1) oder Begriff (z.B. Erweiterte DCC Dekoder)
+  /// * timeout - Wenn das Protokoll eine automatische Ausschaltung des Ausgangs durch den Dekoder unterstützt kann hier die Zeit in ms angegeben werden.
+  ///             None = kein Timeout, dauerhaft schalten. 
+  ///             Duration::ZERO = Port ignorieren, Value ist der zu sendende Begriff (z.B. Erweiterte Funktionsdekoder NMRA/DCC Signalbegriff)
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_ga_tel(&self, adr: u32, port: usize, value: bool, ddl_tel: &mut DdlTel) {
+  fn get_ga_tel(&self, adr: u32, port: usize, value: usize, timeout: Option<Duration>, ddl_tel: &mut DdlTel) -> bool {
+    let mut result = false;
     self.add_sync(ddl_tel, false);
-    let xor = self.add_ga_adr(ddl_tel, adr, port, value);
+    let mut xor = self.add_ga_adr(ddl_tel, adr, port, value == 0);
+    match self.version {
+      DccVersion::V1 => {}, //Nichts
+      DccVersion::V2 => {
+        if let Some(time) = timeout {
+          if time == Duration::ZERO {
+            //3. Byte mit Signalbegriff aus value ergänzen
+            self.add_byte(ddl_tel, value.try_into().unwrap(), &mut xor, false);
+          }
+          else {
+            if value == 0 {
+              //3. Byte mit Port und sofort ausschalten ergänzen
+              self.add_byte(ddl_tel, ((port & 0b00000001) << 7).try_into().unwrap(), &mut xor, false);
+            }
+            else {
+              //3. Byte mit Port und Ausschaltzeit ergänzen
+              let mut t: usize= 0b01111110;
+              if time.as_millis() < (0b01111110 * 100) {
+                t = (time.as_millis() / 100).try_into().unwrap();
+              }
+              self.add_byte(ddl_tel, ((port & 0b00000001) << 7 | t).try_into().unwrap(), &mut xor, false);
+            }
+          }
+        }
+        else {
+          //3. Byte mit Port und Dauerhaft schalten oder ausschalten (wenn value=0) ergänzen
+          self.add_byte(ddl_tel, ((port & 0b00000001) << 7 | if value == 0 {0} else {0b01111111}).try_into().unwrap(), &mut xor, false);
+        }
+        result = true;
+      }
+    }
     self.add_xor(ddl_tel, xor);
+    return result;
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles
@@ -799,19 +851,18 @@ impl DdlProtokoll for DccProtokoll {
   /// * smParameter : Optinal weiterer Protokollspezifischer Parameter
   ///                 Hier kann GA übergeben werden um den SM für GA zu starten.
   fn sm_init(&mut self, _sm_parameter: Option<&str>) {
-    self.sm_aktiv = true;
+    self.sm_aktiv = ServiceMode::GL;
     if let Some(parameter) = _sm_parameter {
-      self.sm_ga = parameter == "GA";
+      if parameter == "GA" {
+        self.sm_aktiv = ServiceMode::GA;
+      }
     }
-    else {
-      self.sm_ga = false;
-    }
-    info!("DDL DCC SM start GA={},{:?}", self.sm_ga, _sm_parameter);
+    info!("DDL DCC SM start GA={:?},{:?}", self.sm_aktiv, _sm_parameter);
   }
 
   /// Dekoderkonfiguration (SM) Ende
   fn sm_term(&mut self) {
-    self.sm_aktiv = false;
+    self.sm_aktiv = ServiceMode::None;
   }
 
   /// Dekoderkonfiguration (SM) Read/Write Value.
@@ -860,7 +911,11 @@ impl DdlProtokoll for DccProtokoll {
   /// Wird hier für senden Rücksetzpaket bei aktiviertem SM verwendet.
   /// Damit wird bei Power Off im Leerlauf dauernd das Rücksetzpaket gesendet.
   fn get_idle_tel_power_off(&self) -> Option<DdlTel> {
-    if self.sm_aktiv {
+    if matches!(self.sm_aktiv, ServiceMode::None) {
+      //Nichts zu senden wenn kein SM aktiv ist
+      None
+    }
+    else {
       //DCC Rücksetz Telegramm: 1111111111111111 0 00000000 0 00000000 0 00000000 1
       let mut ddl_reset_tel = DdlTel::new(
         0,
@@ -878,9 +933,6 @@ impl DdlProtokoll for DccProtokoll {
       //Checksumme ergänzen
       self.add_xor(&mut ddl_reset_tel, xor);
       Some(ddl_reset_tel)
-    } else {
-      //Nichts zu senden wenn kein SM aktiv ist
-      None
     }
   }
 }
