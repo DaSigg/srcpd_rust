@@ -422,7 +422,7 @@ impl DccProtokoll {
     /* calculate the real address of the decoder and the pair number
      * of the switch. Definition, dass Useradr. 1-4 hier die Adresse 1 ist. Die Adr. 2044-2047 sind dann 0.*/
     let address = if adr < 2044 {(adr as usize - 1) / 4 + 1} else {0};
-    let pairnr = if adr < 2044 {(adr as usize - 1) % 4} else {adr as usize % 4};
+    let pairnr = if adr < 2044 {(adr as usize - 1) % 4} else {(adr as usize - 1) % 4};
     /* address byte: 10AAAAAA (lower 6 bits) */
     self.add_byte(
       ddl_tel,
