@@ -942,14 +942,21 @@ impl DdlProtokoll for MfxProtokoll {
   }
 
   /// Erzeugt ein GA Telegramm
+  /// Liefert true zurück, wenn Timeout zu r automatischen Abschaltung durch Protokoll / Dekoder übernommen wird.
   /// # Arguments
   /// * adr - Adresse des Schaltdekoders
   /// * port - Port auf dem Schaltdekoder
   /// * value - Gewünschter Zustand des Port Ein/Aus
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
+  /// * value - Gewünschter Zustand des Port Ein/Aus (0/1) oder Begriff (z.B. Erweiterte DCC Dekoder)
+  /// * timeout - Wenn das Protokoll eine automatische Ausschaltung des Ausgangs durch den Dekoder unterstützt kann hier die Zeit in ms angegeben werden.
+  ///             None = kein Timeout, dauerhaft schalten. 
+  ///             Duration::ZERO = Port ignorieren, Value ist der zu sendende Begriff (z.B. Erweiterte Funktionsdekoder NMRA/DCC Signalbegriff)
+  /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   /// Nicht verwendet, keine GA's in MFX
-  fn get_ga_tel(&self, _adr: u32, _port: usize, _value: bool, _ddl_tel: &mut DdlTel) {
+  fn get_ga_tel(&self, _adr: u32, _port: usize, _value: usize, _timeout: Option<Duration>, _ddl_tel: &mut DdlTel) -> bool {
     assert!(false, "MFX unterstützt keine GA, Aufruf get_ga_tel");
+    false
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles

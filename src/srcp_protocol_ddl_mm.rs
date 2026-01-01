@@ -634,13 +634,18 @@ impl DdlProtokoll for MMProtokoll {
     tel.pause_ende = MM_PAUSE_ENDE_GA;
     tel
   }
-  /// Erzeugt ein MM GA Telegramm mit Pause am Anfang aber ohne Pause vor Wiederholung und Widerholung.
+  /// Erzeugt ein GA Telegramm
+  /// Liefert true zurück, wenn Timeout zur automatischen Abschaltung durch Protokoll / Dekoder übernommen wird.
   /// # Arguments
   /// * adr - Adresse des Schaltdekoders
   /// * port - Port auf dem Schaltdekoder
-  /// * value - Gewünschter Zustand des Port Ein/Aus
+  /// * value - Gewünschter Zustand des Port Ein/Aus (0/1) oder Begriff (z.B. Erweiterte DCC Dekoder)
+  /// * timeout - Wenn das Protokoll eine automatische Ausschaltung des Ausgangs durch den Dekoder unterstützt kann hier die Zeit in ms angegeben werden.
+  ///             None = kein Timeout, dauerhaft schalten. 
+  ///             Duration::ZERO = Port ignorieren, Value ist der zu sendende Begriff (z.B. Erweiterte Funktionsdekoder NMRA/DCC Signalbegriff)
+  ///             Hier nicht verwendet, keine Untesrtützung im MM Protokoll.
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_ga_tel(&self, adr: u32, port: usize, value: bool, ddl_tel: &mut DdlTel) {
+  fn get_ga_tel(&self, adr: u32, port: usize, value: usize, _timeout: Option<Duration>, ddl_tel: &mut DdlTel) -> bool {
     //Dekoderadresse: 4 Ausgangspaare auf Dekoder, deshalb adr/4
     let adr_dekoder = (adr - 1) >> 2;
     //Subadresse auf Dekoder ist welches der 4 Paare plus Port
@@ -649,10 +654,11 @@ impl DdlProtokoll for MMProtokoll {
     self.add_mm1_fnkt_value(
       ddl_tel,
       false,
-      sub_adr + (if value { 0x08 } else { 0x00 }), //Value ist das 4. Bit
+      sub_adr + (if value == 0 { 0x00 } else { 0x08 }), //Value ist das 4. Bit
       true,
     );
     self.complete_mm_paket(ddl_tel);
+    return false;
   }
 
   /// Liefert das Idle Telegramm dieses Protokolles

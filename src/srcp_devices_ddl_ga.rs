@@ -16,17 +16,20 @@ use crate::{
 struct GAInit {
   //Aktuelles Value Pro Port.
   //Aktuell mit DLL unterstützte Protokolle DCC und MM haben nur immer 2 Ports auf einer Adresse
-  value: [bool; 2],
+  value: [usize; 2],
   //Gewähltes Protokoll
   protokoll: DdlProtokolle,
+  //Optional: Protokoll Version
+  protokoll_version: Option<String>,
   //Oszi Trigger?
   trigger: bool,
 }
 impl GAInit {
-  fn new(protokoll: DdlProtokolle, trigger: bool) -> GAInit {
+  fn new(protokoll: DdlProtokolle, protokoll_version: Option<String>, trigger: bool) -> GAInit {
     GAInit {
-      value: [false, false],
+      value: [0, 0],
       protokoll,
+      protokoll_version,
       trigger,
     }
   }
@@ -151,7 +154,7 @@ impl DdlGA<'_> {
   /// * adr - GA Adresse
   /// * port - GA Port
   /// * value - GA Port Zustand
-  fn send_info_msg(&self, session_id: Option<u32>, adr: u32, port: usize, value: bool) {
+  fn send_info_msg(&self, session_id: Option<u32>, adr: u32, port: usize, value: usize) {
     //INFO <bus> GA <adr> <port> <value>
     self
       .tx
@@ -165,36 +168,42 @@ impl DdlGA<'_> {
         vec![
           adr.to_string(),
           port.to_string(),
-          if value {
-            "1".to_string()
-          } else {
-            "0".to_string()
-          },
+          value.to_string(),
         ],
       ))
       .unwrap();
   }
 
   /// GA Port Ausgänge senden und Zustand speichern
+  /// Liefert true zurück, wenn Timeout zur automatischen Abschaltung durch Protokoll / Dekoder übernommen wird.
   /// # Arguments
   /// * adr - GA Adresse
   /// * port - GA Port
   /// * value - Gewünschter Output Zustand
-  fn send_ga(&mut self, adr: u32, port: usize, value: bool) {
+  /// * timeout - Wenn das Protokoll eine automatische Ausschaltung des Ausgangs durch den Dekoder unterstützt kann hier die Zeit in ms angegeben werden.
+  ///             None = kein Timeout, dauerhaft schalten. 
+  ///             Duration::ZERO = Port ignorieren, Value ist der zu sendende Begriff (z.B. Erweiterte Funktionsdekoder NMRA/DCC Signalbegriff)
+  fn send_ga(&mut self, adr: u32, port: usize, value: usize, timeout: Option<Duration>) -> bool {
     let ga = self.all_ga.get_mut(&adr).unwrap();
     //Neuen Zustand speichern
     ga.value[port] = value;
     let protokoll = ga.protokoll;
-    //Zum Booster Versenden, erstes passendes Protokoll verwenden, keine Versionsangabe für GA
-    let protokoll = self.all_protokolle[&protokoll].values().next().unwrap();
+    //Zum Booster Versenden, wenn keine Version angegeben ist erstes passendes Protokoll verwenden, ansonsten verlangte Version
+    let protokoll = if let Some(protokoll_version) = &ga.protokoll_version {
+      self.all_protokolle[&protokoll].get(protokoll_version.as_str()).unwrap()
+    }
+    else {
+      self.all_protokolle[&protokoll].values().next().unwrap()
+    };
     let mut ddl_tel = protokoll.borrow().get_ga_new_tel(adr, ga.trigger);
-    protokoll
+    let result = protokoll
       .borrow_mut()
-      .get_ga_tel(adr, port, value, &mut ddl_tel);
+      .get_ga_tel(adr, port, value, timeout, &mut ddl_tel);
     //Es ist nur ein Telegramm, keine Behandlung verzögertes Senden notwendig
     <DdlGA<'_> as SRCPDeviceDDL>::send(self.spidev, &mut ddl_tel, self.trigger_port);
     //Alle Info Clients über neuen Zustand Informieren
     self.send_info_msg(None, adr, port, value);
+    return result;
   }
 
   /// Stellt fest ob ein Dekoder bereits eine aktive Ausgabe hat für alle GA's, die über SRCP automatisch nach
@@ -225,13 +234,14 @@ impl DdlGA<'_> {
   /// * timeout - Nach welcher Zeit soll die automatische Ausschaltung erfolgen
   fn set_ga_on_timeout(&mut self, adr: u32, port: usize, timeout: Duration) {
     //Einschalten ausführen
-    self.send_ga(adr, port, true);
-    //In Verwaltung zur automatischen Ausschaltung übernehmen
-    self.all_ga_delay.push(GADelay {
-      adr,
-      port,
-      ga_delay_grund: GADelayGrund::Ausschalten(Instant::now() + timeout),
-    });
+    if ! self.send_ga(adr, port, 1, Some(timeout)) {
+      //In Verwaltung zur automatischen Ausschaltung übernehmen
+      self.all_ga_delay.push(GADelay {
+        adr,
+        port,
+        ga_delay_grund: GADelayGrund::Ausschalten(Instant::now() + timeout),
+      });
+    }
   }
 }
 
@@ -249,29 +259,48 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         SRCPMessageType::INIT => {
           //Format ist INIT <bus> GA <addr> <protocol> <optional further parameters>
           //Zwei Parameter müssen vorhanden sein: <addr> <protocol>
+          //<optional further parameters> für Protokoll "N" ist "protocolversion".
+          // "1" = GA "Einfache Zubehördecoder", Default wenn keine Angabe
+          // "2" = GA "Erweiterte Zubehördecoder"
           if cmd_msg.parameter.len() >= 2 {
             //Zuerst das Protokoll
             if let Some(protokoll) = DdlProtokolle::from_str(cmd_msg.parameter[1].as_str()) {
               if let Some(protokolle_impl) = self.all_protokolle.get(&protokoll) {
                 //Keine Protokollversionsangabe bei INIT GA -> immer die erste vorhandene Version verwenden
-                let prot_impl = protokolle_impl.values().next().unwrap();
-                //Adressprüfung
-                if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
-                  if (adr > 0) && (adr <= prot_impl.borrow_mut().get_ga_max_adr()) {
-                    //OK an diese Session
-                    self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
-                    result = true;
+                //Wenn <optional further parameters> für Protokoll "N" angegeben ist"X" für "Erweiterte Zubehördecoder"
+                let prot_version = if cmd_msg.parameter.len() >= 3 {
+                  cmd_msg.parameter[2].as_str()
+                }
+                else {
+                  "1"
+                };
+                //Protokollversion ist angebeben, muss "1" oder "2" sein
+                if prot_version != "1" && prot_version != "2" {
+                  self
+                    .tx
+                    .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+                    .unwrap();
+                }
+                else {
+                  let prot_impl = protokolle_impl.get(prot_version).unwrap();
+                  //Adressprüfung
+                  if let Ok(adr) = cmd_msg.parameter[0].parse::<u32>() {
+                    if (adr > 0) && (adr <= prot_impl.borrow_mut().get_ga_max_adr()) {
+                      //OK an diese Session
+                      self.tx.send(SRCPMessage::new_ok(cmd_msg, "200")).unwrap();
+                      result = true;
+                    } else {
+                      self
+                        .tx
+                        .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
+                        .unwrap();
+                    }
                   } else {
                     self
                       .tx
                       .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
                       .unwrap();
                   }
-                } else {
-                  self
-                    .tx
-                    .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
-                    .unwrap();
                 }
               } else {
                 self
@@ -331,7 +360,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
           //Format ist SET <bus> GA <addr> <port> <value> <time>
           if self.validate_get_set(cmd_msg, 4) {
             //Jetzt noch <value> und <time> prüfen
-            if (cmd_msg.parameter[2] == "0" || cmd_msg.parameter[2] == "1")
+            if cmd_msg.parameter[2].parse::<u8>().is_ok()
               && cmd_msg.parameter[3].parse::<i32>().is_ok()
             {
               //OK an diese Session
@@ -382,7 +411,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         let adr = cmd_msg.parameter[0].parse::<u32>().unwrap();
         self
           .all_ga
-          .insert(adr, GAInit::new(protokoll, self.trigger.contains(&adr)));
+          .insert(adr, GAInit::new(protokoll, if cmd_msg.parameter.len() >= 3 {Some(cmd_msg.parameter[2].clone())} else {None}, self.trigger.contains(&adr)));
         //INFO <bus> GA <adr> <protokoll>
         self
           .tx
@@ -416,9 +445,9 @@ impl SRCPDeviceDDL for DdlGA<'_> {
         //Da SET verzögert über Queue ausgeführt wird könnte ein TERM dazwischen gekommen sein, Adresse nochmals prüfen
         if self.all_ga.contains_key(&adr) {
           let port = cmd_msg.parameter[1].parse::<usize>().unwrap();
-          let value = cmd_msg.parameter[2] == "1";
+          let value = cmd_msg.parameter[2].parse::<usize>().unwrap();
           let switch_off_timeout = cmd_msg.parameter[3].parse::<i32>().unwrap();
-          if value && (switch_off_timeout > 0) {
+          if (value != 0) && (switch_off_timeout > 0) {
             //Zumindest die alten Märklin k83 Dekoder könne nicht mehrere Ausgänge gleichzeitig aktiviert haben.
             //Wenn Ausschalten hier gemacht wird, dann stellen wir hier auch sicher, dass nicht mehr als ein
             //Ausgang auf einem Dekoder gleichzeitg aktiv ist.
@@ -441,7 +470,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
             }
           } else {
             //Keine Zeitangabe für Ausschalten vom Anwender oder explizites Ausschalten, immer sofort ausführen
-            self.send_ga(adr, port, value);
+            self.send_ga(adr, port, value, None);
           }
         }
       }
@@ -495,7 +524,7 @@ impl SRCPDeviceDDL for DdlGA<'_> {
             if Instant::now() > off_zeit {
               //Auto off
               tel_gesendet = true;
-              self.send_ga(ga_delay.adr, ga_delay.port, false);
+              self.send_ga(ga_delay.adr, ga_delay.port, 0, None);
               self.all_ga_delay.remove(i);
             } else {
               i += 1;

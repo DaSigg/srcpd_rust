@@ -224,12 +224,16 @@ pub trait DdlProtokoll {
   /// * trigger - Oszi Trigger?
   fn get_ga_new_tel(&self, adr: u32, trigger: bool) -> DdlTel;
   /// Erzeugt ein GA Telegramm
+  /// Liefert true zurück, wenn Timeout zu r automatischen Abschaltung durch Protokoll / Dekoder übernommen wird.
   /// # Arguments
   /// * adr - Adresse des Schaltdekoders
   /// * port - Port auf dem Schaltdekoder
-  /// * value - Gewünschter Zustand des Port Ein/Aus
+  /// * value - Gewünschter Zustand des Port Ein/Aus (0/1) oder Begriff (z.B. Erweiterte DCC Dekoder)
+  /// * timeout - Wenn das Protokoll eine automatische Ausschaltung des Ausgangs durch den Dekoder unterstützt kann hier die Zeit in ms angegeben werden.
+  ///             None = kein Timeout, dauerhaft schalten. 
+  ///             Duration::ZERO = Port ignorieren, Value ist der zu sendende Begriff (z.B. Erweiterte Funktionsdekoder NMRA/DCC Signalbegriff)
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_ga_tel(&self, adr: u32, port: usize, value: bool, ddl_tel: &mut DdlTel);
+  fn get_ga_tel(&self, adr: u32, port: usize, value: usize, timeout: Option<Duration>, ddl_tel: &mut DdlTel) -> bool;
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
   fn get_idle_tel(&mut self) -> Option<DdlTel>;

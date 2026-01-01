@@ -75,7 +75,8 @@ impl SRCPDeviceDDL for DdlSM {
           //Um alles gleich machen zu können übersetzen wir hier zurück auf die Definitionen bei GL/GA
           //Wenn NMRA verwendet wird:
           // - ohne weiteren Parameter SM für GL, Standardverhalten
-          // - mit NMRA GA wird SM für GA gestartet.
+          // - mit NMRA 1 GA wird SM für GA gestartet (Einfache Zubehördecoder).
+          // - mit NMRA 2 GA wird SM für GA gestartet (Erweiterte Zubehördecoder).
           if cmd_msg.parameter.len() >= 1 {
             //Das verlangte Protokoll muss hier existieren
             if self.gl_ga_prot_names.contains_key(&cmd_msg.parameter[0]) {
@@ -209,13 +210,22 @@ impl SRCPDeviceDDL for DdlSM {
         //Verlangtes Protokoll wird das aktive SM Protokoll
         self.sm_protokoll = Some((
           DdlProtokolle::from_str(prot_name).unwrap(),
-          prot_ver.to_string(),
+          //Wenn Protokollversion über Init Befehl definiert wurde, dann diese verwenden
+          if cmd_msg.parameter.len() > 1 {
+            cmd_msg.parameter[1].clone()
+          }
+          else {
+            prot_ver.to_string() //Default
+          }
+          ,
         ));
         //Und Protokoll SM INIT. Wenn neben Protokoll noch ein Parameter vorhanden ist, dann wird er sm_init übergeben.
-        //zB NMRA GA -> GA
+        //zB
+        // - mit NMRA 1 GA wird SM für GA gestartet (Einfache Zubehördecoder).
+        // - mit NMRA 2 GA wird SM für GA gestartet (Erweiterte Zubehördecoder).
         let (prot, prot_ver) = self.sm_protokoll.as_ref().unwrap();
         let protokoll = &self.all_protokolle[prot][prot_ver.as_str()];
-        protokoll.borrow_mut().sm_init(if cmd_msg.parameter.len() > 1 {Some(cmd_msg.parameter[1].as_str())} else {None});
+        protokoll.borrow_mut().sm_init(if cmd_msg.parameter.len() > 2 {Some(cmd_msg.parameter[2].as_str())} else {None});
         //SRCP Antwort OK zurücksenden
         let ok_msg = SRCPMessage::new_ok(cmd_msg, "200");
         self.tx.send(ok_msg).unwrap();
