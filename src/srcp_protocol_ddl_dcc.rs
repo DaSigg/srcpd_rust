@@ -110,6 +110,7 @@ const DCC_PROG_KK_BIT: u8 = 0b00001000;
 const SPEED_STEP_4BIT: usize = 14;
 const SPEED_STEP_5BIT: usize = 29;
 
+#[derive(Debug)]
 pub enum DccVersion {
   V1, //Kurze Lokadresse bis 127, GA sind "Einfache Zubehördecoder"
   V2, //Lange Lokadresse 128 bis 10239. Bis 127 wird gemäss DCC Standard automatisch auch hier immer mit der kurzen Adresse gearbeitet, GA sind "Erweiterte Zubehördecoder"
@@ -857,7 +858,7 @@ impl DdlProtokoll for DccProtokoll {
         self.sm_aktiv = ServiceMode::GA;
       }
     }
-    info!("DDL DCC SM start GA={:?},{:?}", self.sm_aktiv, _sm_parameter);
+    info!("DDL DCC SM start GA={:?},{:?} V={:?}", self.sm_aktiv, _sm_parameter, self.version);
   }
 
   /// Dekoderkonfiguration (SM) Ende
