@@ -187,14 +187,25 @@ impl DdlGA<'_> {
     let ga = self.all_ga.get_mut(&adr).unwrap();
     //Neuen Zustand speichern
     ga.value[port] = value;
-    let protokoll = ga.protokoll;
-    //Zum Booster Versenden, wenn keine Version angegeben ist erstes passendes Protokoll verwenden, ansonsten verlangte Version
-    let protokoll = if let Some(protokoll_version) = &ga.protokoll_version {
-      self.all_protokolle[&protokoll].get(protokoll_version.as_str()).unwrap()
+    //Zum Booster Versenden, wenn keine Version angegeben ist das Default-Protokoll verwenden, ansonsten verlangte Version
+    let prot_ver = if let Some(protokoll_version) = &ga.protokoll_version {
+      protokoll_version
     }
     else {
-      self.all_protokolle[&protokoll].values().next().unwrap()
+      let mut def_ver_gefunden: Option<&str> = None;
+      for (ver, prot) in &self.all_protokolle[&ga.protokoll] {
+        if prot.borrow().is_default() {
+          def_ver_gefunden = Some(ver);
+        }
+      }
+      if let Some(def_ver) = def_ver_gefunden {
+        def_ver
+      }
+      else {
+        panic!("Für Protokoll {:?} ist keine Default Version vorhanden.", ga.protokoll);
+      }
     };
+    let protokoll = self.all_protokolle[&ga.protokoll].get(prot_ver).unwrap();
     let mut ddl_tel = protokoll.borrow().get_ga_new_tel(adr, ga.trigger);
     let result = protokoll
       .borrow_mut()

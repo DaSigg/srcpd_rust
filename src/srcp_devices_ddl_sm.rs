@@ -80,13 +80,22 @@ impl SRCPDeviceDDL for DdlSM {
           if cmd_msg.parameter.len() >= 1 {
             //Das verlangte Protokoll muss hier existieren
             if self.gl_ga_prot_names.contains_key(&cmd_msg.parameter[0]) {
-              //Und aktuell keines in Verwendung sein
-              if self.sm_protokoll.is_none() {
-                result = true;
-              } else {
+              //Wenn für NMRA eine Version angegeben ist, dann muss es 1 oder 2 sein
+              if cmd_msg.parameter[0] != "NMRA" || cmd_msg.parameter.len() < 2 || cmd_msg.parameter[1] == "1" || cmd_msg.parameter[1] == "2" {
+                //Und aktuell keines in Verwendung sein
+                if self.sm_protokoll.is_none() {
+                  result = true;
+                } else {
+                  self
+                    .tx
+                    .send(SRCPMessage::new_err(cmd_msg, "415", "forbidden"))
+                    .unwrap();
+                }
+              }
+              else {
                 self
                   .tx
-                  .send(SRCPMessage::new_err(cmd_msg, "415", "forbidden"))
+                  .send(SRCPMessage::new_err(cmd_msg, "412", "wrong value"))
                   .unwrap();
               }
             } else {
