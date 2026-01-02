@@ -647,7 +647,8 @@ impl DdlProtokoll for MMProtokoll {
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   fn get_ga_tel(&self, adr: u32, port: usize, value: usize, _timeout: Option<Duration>, ddl_tel: &mut DdlTel) -> bool {
     //Dekoderadresse: 4 Ausgangspaare auf Dekoder, deshalb adr/4
-    let adr_dekoder = (adr - 1) >> 2;
+    //Überlauf auf 81 für Adressen 312 bis 324 ergibt dann die 0, was OK ist.
+    let adr_dekoder = ((adr - 1) >> 2) + 1;
     //Subadresse auf Dekoder ist welches der 4 Paare plus Port
     let sub_adr = (((adr as usize - 1) & 3) << 1) + (port & 1);
     self.add_mm_pause_adr(ddl_tel, adr_dekoder, true);
