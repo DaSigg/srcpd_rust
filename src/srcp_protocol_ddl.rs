@@ -161,6 +161,10 @@ pub trait DdlProtokoll {
   fn uid(&self) -> bool {
     false
   }
+  /// Wenn von einem Protokoll mehrere Versionen (z.B. NMRA 1 und 2) instanziert werden,
+  /// dann muss eines davon zum Default erklärt werden. Die Default Version wird dann verwendet,
+  /// wenn keine Version durch den Benutzer angegeben wird.
+  fn is_default(&self) -> bool;
   /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
   /// Liefert, wenn "power" ein allfällg notwendiges Init-Telegramm (z.B. MFX SID Zurordnung) zurück.
   /// # Arguments

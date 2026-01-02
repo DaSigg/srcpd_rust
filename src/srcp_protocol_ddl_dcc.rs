@@ -465,6 +465,13 @@ impl DccProtokoll {
 }
 
 impl DdlProtokoll for DccProtokoll {
+  /// Wenn von einem Protokoll mehrere Versionen (z.B. NMRA 1 und 2) instanziert werden,
+  /// dann muss eines davon zum Default erklärt werden. Die Default Version wird dann verwendet,
+  /// wenn keine Version durch den Benutzer angegeben wird.
+  fn is_default(&self) -> bool {
+    //Bei DCC ist V1 default
+    matches!(self.version, DccVersion::V1)
+  }
   /// GL Init Daten setzen. Welche Daten verwendet werden ist Protokollabhängig.
   /// Liefert immer None, kein GL Init Tel. notwendig
   /// # Arguments
