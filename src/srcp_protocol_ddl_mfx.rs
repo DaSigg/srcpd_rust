@@ -693,6 +693,13 @@ impl MfxProtokoll {
 }
 
 impl DdlProtokoll for MfxProtokoll {
+  /// Wenn von einem Protokoll mehrere Versionen (z.B. NMRA 1 und 2) instanziert werden,
+  /// dann muss eines davon zum Default erklärt werden. Die Default Version wird dann verwendet,
+  /// wenn keine Version durch den Benutzer angegeben wird.
+  fn is_default(&self) -> bool {
+    //Es gibt nur eine Version
+    true
+  }
   /// Legt fest, ob das Protokoll eine UID benötigt, die bei GL INIT Kommando angegeben werden muss
   /// Return true wenn UID benötigt.
   fn uid(&self) -> bool {
