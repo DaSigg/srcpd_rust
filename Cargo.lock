@@ -367,7 +367,7 @@ checksum = "2db70a1e6827e4d71c655b606caf1346862c38ae52ab4f58c32635e7c7aedd67"
 
 [[package]]
 name = "srcpd"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "configparser",

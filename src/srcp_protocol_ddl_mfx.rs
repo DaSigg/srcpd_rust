@@ -1,6 +1,7 @@
 use std::{
   collections::HashMap,
   fs,
+  net::UdpSocket,
   sync::mpsc::{self, Receiver, Sender},
   thread,
   time::{Duration, Instant},
@@ -153,6 +154,8 @@ pub struct MfxProtokoll {
   reg_counter: u16,
   /// Pfad zum File zur Speicherung Neuanmeldezähler
   path_reg_counter_file: String,
+  /// UDP Socket wenn MFX RDS Rückmeldungen über Software "mfxrds" erfolgt
+  udp_socket_rds_present: Option<UdpSocket>,
   /// Halten Richtung bei Richtung Nothalt
   old_drive_mode: [GLDriveMode; MAX_MFX_GL_ADRESSE as usize + 1],
   /// Erkennung Funktionswechsel für die nicht immer gesendeten höheren Fx
@@ -194,8 +197,12 @@ impl MfxProtokoll {
   /// * version - V0
   /// * uid_zentrale - Zu verwendende UID der Zentrale
   /// * path_reg_counter_file - File in dem der Neuanmeldezähler gespeichert ist
+  /// * udp_baseport_rds - UDP Port für MFX RDS Rückmeldungen von Software "mfxrds".
+  ///                      An diesem Port werden die Daten erwartet, an +1 die Meldungen RDS vorhanden.
+  ///                      Wenn nicht vorhanden: Rückmeldung über GPIO von RDS Chip.
   pub fn from(
     version: MfxVersion, uid_zentrale: u32, path_reg_counter_file: String,
+    udp_baseport_rds: Option<u16>,
   ) -> MfxProtokoll {
     //Neuanmeldezähler laden
     let mut reg_counter: u16 = 0;
@@ -209,6 +216,19 @@ impl MfxProtokoll {
       )
     }
     info!("MfxProtokoll Start mit Neuanmeldezähler={reg_counter}");
+    //MFX RDS Rückmeldungen GPIO oder UDP
+    let mut udp_socket_rds_present: Option<UdpSocket> = None;
+    if let Some(mut port) = udp_baseport_rds {
+      port += 1;
+      if let Ok(socket) = UdpSocket::bind(format!("127.0.0.1:{}", port)) {
+        socket
+          .set_nonblocking(true)
+          .expect("MFX RDS-present UDP set_nonblocking Error");
+        udp_socket_rds_present = Some(socket);
+      } else {
+        warn!("MfxProtokoll MFX RDS-present UDP Port {port} konnte nicht geöffnet werden.")
+      }
+    }
     //Channels zur Kommunikation mit RDS Thread
     //-> Aufträge zum RDS Thread
     let (tx_to_rds, rx_in_rds): (Sender<MfxRdsJob>, Receiver<MfxRdsJob>) = mpsc::channel();
@@ -234,6 +254,7 @@ impl MfxProtokoll {
           tx_from_rds_read_write_ca,
           tx_from_rds_lok_init,
           tx_tel_from_rds,
+          udp_baseport_rds,
         )
         .execute()
       })
@@ -244,6 +265,7 @@ impl MfxProtokoll {
       uid_zentrale,
       reg_counter,
       path_reg_counter_file,
+      udp_socket_rds_present,
       old_drive_mode: [GLDriveMode::Vorwaerts; MAX_MFX_GL_ADRESSE as usize + 1],
       old_funktionen: [0; MAX_MFX_GL_ADRESSE as usize + 1],
       uid: [0; MAX_MFX_GL_ADRESSE as usize + 1],
@@ -504,8 +526,20 @@ impl MfxProtokoll {
     //2 Sync
     self.add_sync(ddl_tel, false);
     self.add_sync(ddl_tel, false);
-    //Und Rückmeldung aktivieren
-    ddl_tel.daten_rx = Some(vec![0; ddl_tel.daten.last().unwrap().len()]);
+    //Falls die MFX RDS Rückmeldung zur Dekodersuche über UDP Socket erfolgt, wird der Empfangsbuffer jetzt geleert.
+    if let Some(socket) = &self.udp_socket_rds_present {
+      //Rückmeldung über UDP vom mfxrds Software -> Rx Buffer leeren
+      loop {
+        let mut buf = [0; 1]; //Es werden nur "S" oder "E" empfangen
+        match socket.recv(&mut buf) {
+          Ok(..) => {}
+          Err(..) => break,
+        }
+      }
+    } else {
+      //Und Rückmeldung über SPI In aktivieren
+      ddl_tel.daten_rx = Some(vec![0; ddl_tel.daten.last().unwrap().len()]);
+    }
   }
 
   /// Auswertung Ergebnis Dekodersuche.
@@ -516,18 +550,38 @@ impl MfxProtokoll {
   /// * daten_rx: parallel zum Senden eingelesene Daten, Bit = 1 = RDS Feedback war vorhanden
   fn eval_send_search_new_decoder(&mut self, daten_rx: &Vec<u8>) -> ResultNeuAnmeldung {
     let mut result = ResultNeuAnmeldung::None;
-    //Rückmeldung wird ers 1ms nach Start Rückmeldefenster ausgewertet da von letzter Schaltflanke
-    //noch Schwingungen vorhanden sein könnten die irrtümlich als RDS Signal ausgewertet werden
-    const MFX_LEN_PAUSE_1_MS: usize = MFX_LEN_PAUSE_6_4_MS / 6;
-    let mut anz_1: u32 = 0;
-    for i in self.rds_1_bit_start_pos + MFX_LEN_PAUSE_1_MS
-      ..self.rds_1_bit_start_pos + MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS
-    {
-      anz_1 += u8::count_ones(daten_rx[i]);
-    }
-    //5% der Bits gesetzt, es wird wohl tatsächlich ein Dekoder geantwortet haben und keine Störung sein
-    //War 50% bis PIKO Giruno, hier kommt ein viel schwächeres Signal ... :-(
-    if anz_1 >= (((MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS) * 8 / 20) as u32) {
+    let pos_feedback = if let Some(socket) = &self.udp_socket_rds_present {
+      //Rückmeldung über UDP vom mfxrds Software
+      //Wenn ein S als Startkennung empfangen wurde -> RDS Signal war vorhanden
+      let mut pos_feedback = false;
+      loop {
+        let mut buf = [0u8; 1]; //Es werden nur "S" oder "E" empfangen
+        match socket.recv(&mut buf) {
+          Ok(received) => {
+            if (received > 0) && (buf[0] == b'S') {
+              pos_feedback = true;
+            }
+          }
+          Err(..) => break,
+        }
+      }
+      pos_feedback
+    } else {
+      //Rückmeldung von RDS HW im SPI In-Buffer
+      //Rückmeldung wird ers 1ms nach Start Rückmeldefenster ausgewertet da von letzter Schaltflanke
+      //noch Schwingungen vorhanden sein könnten die irrtümlich als RDS Signal ausgewertet werden
+      const MFX_LEN_PAUSE_1_MS: usize = MFX_LEN_PAUSE_6_4_MS / 6;
+      let mut anz_1: u32 = 0;
+      for i in self.rds_1_bit_start_pos + MFX_LEN_PAUSE_1_MS
+        ..self.rds_1_bit_start_pos + MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS
+      {
+        anz_1 += u8::count_ones(daten_rx[i]);
+      }
+      //5% der Bits gesetzt, es wird wohl tatsächlich ein Dekoder geantwortet haben und keine Störung sein
+      //War 50% bis PIKO Giruno, hier kommt ein viel schwächeres Signal ... :-(
+      anz_1 >= (((MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS) * 8 / 20) as u32)
+    };
+    if pos_feedback {
       //Positive Rückmeldung erhalten
       result = ResultNeuAnmeldung::InProgress;
       //Wenn bereits 32 Bit gefunden -> Neuer Dekoder gefunden
@@ -957,11 +1011,14 @@ impl DdlProtokoll for MfxProtokoll {
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   /// * value - Gewünschter Zustand des Port Ein/Aus (0/1) oder Begriff (z.B. Erweiterte DCC Dekoder)
   /// * timeout - Wenn das Protokoll eine automatische Ausschaltung des Ausgangs durch den Dekoder unterstützt kann hier die Zeit in ms angegeben werden.
-  ///             None = kein Timeout, dauerhaft schalten. 
+  ///             None = kein Timeout, dauerhaft schalten.
   ///             Duration::ZERO = Port ignorieren, Value ist der zu sendende Begriff (z.B. Erweiterte Funktionsdekoder NMRA/DCC Signalbegriff)
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
   /// Nicht verwendet, keine GA's in MFX
-  fn get_ga_tel(&self, _adr: u32, _port: usize, _value: usize, _timeout: Option<Duration>, _ddl_tel: &mut DdlTel) -> bool {
+  fn get_ga_tel(
+    &self, _adr: u32, _port: usize, _value: usize, _timeout: Option<Duration>,
+    _ddl_tel: &mut DdlTel,
+  ) -> bool {
     assert!(false, "MFX unterstützt keine GA, Aufruf get_ga_tel");
     false
   }

@@ -1,6 +1,6 @@
 [package]
 name = "srcpd"
-version = "2.0.0"
+version = "2.1.0"
 homepage = "www.siggsoftware.ch"
 edition = "2021"
 authors = ["Daniel Sigg <daniel@siggsoftware.ch>"]
