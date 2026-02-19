@@ -1,3 +1,8 @@
+[srcpd_rust Homepage](https://siggsoftware.ch/wordpress/srcpd-in-rust/)
+
+Achtung: ab R2.0 wurde die MM GA Adressierung korrigiert. Diese war 4 verschoben, was bei Zubehöhrdekodern die DCC und MM beherrschen zu unterschiedlichen Adressen geführt hat.
+Bei Update zu R2.0 entweder auf Softwareseite alle GA Adressen für MM Protokoll -4 rechnen, aus Adresse 5 wird 1, aus 1 bis 4 wird 321 bis 324 oder die Dekoderbasisadresse um 1 erhöhen.
+
 [SRCP](https://de.wikipedia.org/wiki/Simple_Railroad_Command_Protocol) Implementierung eines [DDL](https://de.wikipedia.org/wiki/Digital_Direct_for_Linux) Servers in RUST.
 Einschränkungen:
 - Auf SRCP Seite is nur das implementiert, was ich brauche, siehe Doku.

@@ -58,6 +58,9 @@ pub struct DDL {
   dcc_enabled: bool,
   //MFX Protokoll aktiv wenn UID > 0
   mfx_enabled_uid: u32,
+  //UDP Basisportnummer für MFX RDS Rückmeldungen, wenn diese von GNU RADIO "mfxrds" kommen.
+  //wenn nicht vorhanden: RDS Rückmeldungen von RDS Chip über GPIO
+  udp_mfxrds_port: Option<u16>,
   //Pfad zu File zur Speicherung Neuanmeldezähler
   mfx_reg_count_file: String,
   //Booster mit On/Off mit "Siggmode" (Impuls auf RTS für On, Impuls auf DTR für Off)
@@ -89,6 +92,7 @@ impl Clone for DDL {
       maerklin_enabled: self.maerklin_enabled,
       dcc_enabled: self.dcc_enabled,
       mfx_enabled_uid: self.mfx_enabled_uid,
+      udp_mfxrds_port: self.udp_mfxrds_port,
       mfx_reg_count_file: self.mfx_reg_count_file.clone(),
       siggmode: self.siggmode,
       dsr_invers: self.dsr_invers,
@@ -113,6 +117,7 @@ impl DDL {
       maerklin_enabled: false,
       dcc_enabled: false,
       mfx_enabled_uid: 0,
+      udp_mfxrds_port: None,
       mfx_reg_count_file: PATH_REG_COUNTER_FILE.to_string(),
       siggmode: false,
       dsr_invers: false,
@@ -176,6 +181,7 @@ impl DDL {
           MfxVersion::V0,
           self.mfx_enabled_uid,
           self.mfx_reg_count_file.clone(),
+          self.udp_mfxrds_port,
         ))),
       );
       all_protocols.insert(DdlProtokolle::Mfx, mfx_protocols);
@@ -455,6 +461,16 @@ impl SRCPServer for DDL {
         .as_ref()
         .ok_or("DDL: zu mfx_reg_count_file muss ein Pfad angegegben werden.")?
         .clone();
+    }
+    if let Some(port) = config_file_bus.get("mfx_rds_port") {
+      self.udp_mfxrds_port = Some(
+        port
+          .as_ref()
+          .ok_or("DDL: MFX RDS Port > 0 (oder nichts) notwendig")?
+          .parse::<u16>()
+          .ok()
+          .ok_or("MFX RDS Port muss eine Zahl > 0 sein")?,
+      );
     }
     self.siggmode = config_file_bus.get("siggmode").is_some();
     self.dsr_invers = config_file_bus.get("dsr_invers").is_some();
