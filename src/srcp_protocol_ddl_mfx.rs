@@ -220,9 +220,9 @@ impl MfxProtokoll {
     let mut udp_socket_rds_present: Option<UdpSocket> = None;
     if let Some(mut port) = udp_baseport_rds {
       port += 1;
-      if let Ok(socket) = UdpSocket::bind(format!("127.0.0.1:{}", port)) {
+      if let Ok(socket) = UdpSocket::bind(format!("0.0.0.0:{}", port)) {
         socket
-          .set_nonblocking(true)
+          .set_read_timeout(Some(Duration::new(0, 40000000))) //40ms Timeout als Reaktionszeit für Rückmeldung
           .expect("MFX RDS-present UDP set_nonblocking Error");
         udp_socket_rds_present = Some(socket);
       } else {
@@ -526,6 +526,7 @@ impl MfxProtokoll {
     //2 Sync
     self.add_sync(ddl_tel, false);
     self.add_sync(ddl_tel, false);
+    info!("MFX Search UID={} Bits={}", self.search_new_dekoder_bits, self.search_new_dekoder_bits);
     //Falls die MFX RDS Rückmeldung zur Dekodersuche über UDP Socket erfolgt, wird der Empfangsbuffer jetzt geleert.
     if let Some(socket) = &self.udp_socket_rds_present {
       //Rückmeldung über UDP vom mfxrds Software -> Rx Buffer leeren
@@ -536,10 +537,10 @@ impl MfxProtokoll {
           Err(..) => break,
         }
       }
-    } else {
-      //Und Rückmeldung über SPI In aktivieren
-      ddl_tel.daten_rx = Some(vec![0; ddl_tel.daten.last().unwrap().len()]);
     }
+    //Und Rückmeldung über SPI In aktivieren
+    //Muss auch bei UDP Rückmeldung sein, da dies die Kennung ist, dass eine Rückmeldung ausgewertet werden muss
+    ddl_tel.daten_rx = Some(vec![0; ddl_tel.daten.last().unwrap().len()]);
   }
 
   /// Auswertung Ergebnis Dekodersuche.
@@ -555,9 +556,10 @@ impl MfxProtokoll {
       //Wenn ein S als Startkennung empfangen wurde -> RDS Signal war vorhanden
       let mut pos_feedback = false;
       loop {
-        let mut buf = [0u8; 1]; //Es werden nur "S" oder "E" empfangen
+        let mut buf = [0u8; 8]; //Es werden nur "S" oder "E" empfangen
         match socket.recv(&mut buf) {
           Ok(received) => {
+            info!("UDP Rx: {:?}", buf);
             if (received > 0) && (buf[0] == b'S') {
               pos_feedback = true;
             }

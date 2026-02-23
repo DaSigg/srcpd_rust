@@ -316,10 +316,11 @@ impl MfxRdsFeedbackThread {
         gpio_mfx_rds_qal: None,
         gpio_mfx_rds_clk: None,
         gpio_mfx_rds_dat: None,
-        socket_rds_data: if let Ok(socket) = UdpSocket::bind(format!("127.0.0.1:{}", udp_port)) {
+        socket_rds_data: if let Ok(socket) = UdpSocket::bind(format!("0.0.0.0:{}", udp_port)) {
           socket
             .set_nonblocking(true)
             .expect("MFX RDS-data UDP set_nonblocking Error");
+          info!("UDP Socket Port {udp_port}");
           Some(socket)
         } else {
           warn!("MfxProtokoll MFX RDS-data UDP Port {udp_port} konnte nicht geöffnet werden.");
@@ -425,10 +426,11 @@ impl MfxRdsFeedbackThread {
             let mut buf = [0u8; 256];
             match socket_rds_data.recv(&mut buf) {
               Ok(received) => {
+                rds_socket_buffer.resize(received, 0);
                 rds_socket_buffer.copy_from_slice(&buf[0..received]);
                 break;
               }
-              Err(..) => {}
+              Err(..) => { }
             }
           } else {
             //Es sind noch nicht verarbeitete Daten vorhanden
@@ -436,7 +438,7 @@ impl MfxRdsFeedbackThread {
           }
         }
         //ggf. Abbruch wegen Timeout
-        if Instant::now() > (time_start + Duration::from_millis(200)) {
+        if Instant::now() > (time_start + Duration::from_millis(500)) {
           info!("MFX RDS thread Timeout.");
           result_error = true;
           break;
@@ -971,6 +973,18 @@ impl MfxRdsFeedbackThread {
     loop {
       //Warten auf Arbeit
       let auftrag = self.rx.recv().unwrap();
+      //Wenn UDP Rückmeldungen -> Rx Buffer leeren
+      loop {
+        if let Some(socket) = &self.socket_rds_data {
+          let mut buf = [0u8; 256];
+          match socket.recv(&mut buf) {
+            Ok(..) => {}
+            Err(..) => {
+              break;
+            }
+          }
+        }
+      }
       match auftrag {
         MfxRdsJob::ReadAllInitParameter { adr } => {
           //Lokname und Funktionen lesen (nie ein Oszi Trigger, neue Adresse)
