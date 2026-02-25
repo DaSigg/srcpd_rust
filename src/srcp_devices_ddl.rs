@@ -7,7 +7,9 @@ use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
 use log::warn;
 use spidev::{Spidev, SpidevTransfer};
 
-use crate::{srcp_protocol_ddl::DdlTel, srcp_server_types::SRCPMessage};
+use crate::{
+  srcp_protocol_ddl::DdlTel, srcp_protocol_ddl::DdlTelRx, srcp_server_types::SRCPMessage,
+};
 
 /// Schnittstelle für alle Devices die in einem SRCP DDL Server bearbeitet werden
 pub trait SRCPDeviceDDL {
@@ -80,8 +82,8 @@ pub trait SRCPDeviceDDL {
       LETZTE_PAUSE_ENDE = ddl_tel.pause_ende;
     }
 
-    let mut transfer = match ddl_tel.daten_rx.as_mut() {
-      Some(daten_rx) if ddl_tel.daten.len() == 1 => {
+    let mut transfer = match ddl_tel.daten_rx {
+      DdlTelRx::SpiRx(ref mut daten_rx) if ddl_tel.daten.len() == 1 => {
         assert_eq!(
           ddl_tel.daten[0].len(),
           daten_rx.len(),
@@ -89,7 +91,9 @@ pub trait SRCPDeviceDDL {
         );
         SpidevTransfer::read_write(ddl_tel.daten[0].as_slice(), daten_rx.as_mut_slice())
       }
-      Some(_) | None => SpidevTransfer::write(ddl_tel.daten[0].as_slice()),
+      DdlTelRx::SpiRx(_) | DdlTelRx::None | DdlTelRx::Udp => {
+        SpidevTransfer::write(ddl_tel.daten[0].as_slice())
+      }
     };
     transfer.speed_hz = ddl_tel.hz;
     for _ in 0..ddl_tel.tel_wiederholungen {
