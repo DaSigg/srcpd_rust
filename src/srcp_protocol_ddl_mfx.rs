@@ -595,31 +595,29 @@ impl MfxProtokoll {
             //info!("UDP Rx: {:?}", buf);
             if (received > 0) && (buf[0] == b'S') {
               pos_feedback = Some(true);
+              //Es muss nicht mehr auf UDP Rückmeldung gewartet werden
+              self.search_new_dekoder_udp_rx_time = None;
             }
           }
           Err(..) => break,
         }
       }
       //40ms Timeout müssen reichen
-      if Instant::now() - search_new_dekoder_udp_rx_time > Duration::new(0, 40000000) {
+      if pos_feedback.is_none() && (Instant::now() - search_new_dekoder_udp_rx_time > Duration::new(0, 40000000)) {
         self.search_new_dekoder_udp_rx_time = None;
         //Wenn bis jetzt keine positive Rückmeldung,, dann ist sie jetzt negativ
-        if pos_feedback.is_none() {
-          pos_feedback = Some(false);
-        }
+        pos_feedback = Some(false);
       }
     }
 
-    let mut result = if self.search_new_dekoder_udp_rx_time.is_some() {
-      //Es wird noch auf UDP Antwort gewartet -> InProgress
+    let mut result: ResultNeuAnmeldung = if self.search_new_dekoder_bits > 0 {
+      //Eine Suche ist im Gange, auch wenn wir aktuelle vielleicht noch auf eine UDP Rückmeldung warten
       ResultNeuAnmeldung::InProgress
     } else {
       ResultNeuAnmeldung::None
     };
     //Auswertung der Rückmeldung wenn vorhanden, ansonsten noch nichts machen und später nochmals versuchen
     if let Some(pos_f) = pos_feedback {
-      //Wenn eine Antwort vorhanden ist -> InProgress
-      result = ResultNeuAnmeldung::InProgress;
       if pos_f {
         //Positive Rückmeldung erhalten
         //Wenn bereits 32 Bit gefunden -> Neuer Dekoder gefunden
@@ -647,6 +645,8 @@ impl MfxProtokoll {
             "MFX Dekodersuche UID Bit gefunden. Anzahl Bits gefunden {} UID {}",
             self.search_new_dekoder_bits, self.search_new_dekoder_uid
           );
+          //Da eine positive Antwort vorhanden ist -> InProgress
+          result = ResultNeuAnmeldung::InProgress;
           // mit nächstem Bit weiter suchen
           self.search_new_dekoder_bits += 1;
         }
