@@ -12,7 +12,8 @@ use log::{info, warn};
 use crate::{
   srcp_mfx_rds::{MfxCvTel, MfxCvTelType, MfxRdsFeedbackThread, MfxRdsJob},
   srcp_protocol_ddl::{
-    DdlProtokoll, DdlTel, GLDriveMode, ResultNeuAnmeldung, ResultReadGlParameter, SmReadWrite,
+    DdlProtokoll, DdlTel, DdlTelRx, GLDriveMode, ResultNeuAnmeldung, ResultReadGlParameter,
+    SmReadWrite,
   },
 };
 
@@ -175,6 +176,8 @@ pub struct MfxProtokoll {
   search_new_dekoder_bits: u32,
   /// Anzahl gefundene UID
   search_new_dekoder_uid: u32,
+  /// Wenn Rückmeldung über UDP vom MFXRDS erwartet, dann wird hier der Zeitpunkt ab dem gewartet wird gespeichert um mit Timeout abbrechen zu können
+  search_new_dekoder_udp_rx_time: Option<Instant>,
   /// Anfangts und Endpositions 1 Bit Rückmeldung im SPI Bytebuffer
   rds_1_bit_start_pos: usize,
   /// Channel für Aufträge an RDS Thread
@@ -220,7 +223,7 @@ impl MfxProtokoll {
     let mut udp_socket_rds_present: Option<UdpSocket> = None;
     if let Some(mut port) = udp_baseport_rds {
       port += 1;
-      if let Ok(socket) = UdpSocket::bind(format!("127.0.0.1:{}", port)) {
+      if let Ok(socket) = UdpSocket::bind(format!("0.0.0.0:{}", port)) {
         socket
           .set_nonblocking(true)
           .expect("MFX RDS-present UDP set_nonblocking Error");
@@ -275,6 +278,7 @@ impl MfxProtokoll {
       zeitpunkt_uid: Instant::now(),
       search_new_dekoder_bits: 0,
       search_new_dekoder_uid: 0,
+      search_new_dekoder_udp_rx_time: None,
       rds_1_bit_start_pos: 0,
       tx_to_rds,
       rx_from_rds_read_write_ca,
@@ -526,19 +530,27 @@ impl MfxProtokoll {
     //2 Sync
     self.add_sync(ddl_tel, false);
     self.add_sync(ddl_tel, false);
+    if self.search_new_dekoder_bits > 0 {
+      info!(
+        "MFX Search UID={} Bits={}",
+        self.search_new_dekoder_uid, self.search_new_dekoder_bits
+      );
+    }
     //Falls die MFX RDS Rückmeldung zur Dekodersuche über UDP Socket erfolgt, wird der Empfangsbuffer jetzt geleert.
     if let Some(socket) = &self.udp_socket_rds_present {
       //Rückmeldung über UDP vom mfxrds Software -> Rx Buffer leeren
       loop {
-        let mut buf = [0; 1]; //Es werden nur "S" oder "E" empfangen
+        let mut buf = [0; 128]; //Es werden nur "S" oder "E" empfangen
         match socket.recv(&mut buf) {
           Ok(..) => {}
           Err(..) => break,
         }
       }
+      //Und Rückmeldung über Udp aktivieren.
+      ddl_tel.daten_rx = DdlTelRx::Udp;
     } else {
-      //Und Rückmeldung über SPI In aktivieren
-      ddl_tel.daten_rx = Some(vec![0; ddl_tel.daten.last().unwrap().len()]);
+      //Und Rückmeldung über SPI In aktivieren.
+      ddl_tel.daten_rx = DdlTelRx::SpiRx(vec![0; ddl_tel.daten.last().unwrap().len()]);
     }
   }
 
@@ -547,84 +559,112 @@ impl MfxProtokoll {
   /// Wenn 32 Bit gefunden -> neuer Dekoder gefunden.
   /// Ergebnis: siehe "ResultNeuAnmeldung".
   /// # Arguments
-  /// * daten_rx: parallel zum Senden eingelesene Daten, Bit = 1 = RDS Feedback war vorhanden
-  fn eval_send_search_new_decoder(&mut self, daten_rx: &Vec<u8>) -> ResultNeuAnmeldung {
-    let mut result = ResultNeuAnmeldung::None;
-    let pos_feedback = if let Some(socket) = &self.udp_socket_rds_present {
-      //Rückmeldung über UDP vom mfxrds Software
-      //Wenn ein S als Startkennung empfangen wurde -> RDS Signal war vorhanden
-      let mut pos_feedback = false;
+  /// * daten_rx : Die Art der erwarteten Rückmeldung
+  fn eval_send_search_new_decoder(&mut self, daten_rx: &DdlTelRx) -> ResultNeuAnmeldung {
+    let mut pos_feedback: Option<bool> = None;
+    match daten_rx {
+      DdlTelRx::None => {}
+      DdlTelRx::SpiRx(daten_rx) => {
+        //Rückmeldung von RDS HW im SPI In-Buffer
+        //Rückmeldung wird ers 1ms nach Start Rückmeldefenster ausgewertet da von letzter Schaltflanke
+        //noch Schwingungen vorhanden sein könnten die irrtümlich als RDS Signal ausgewertet werden
+        const MFX_LEN_PAUSE_1_MS: usize = MFX_LEN_PAUSE_6_4_MS / 6;
+        let mut anz_1: u32 = 0;
+        for i in self.rds_1_bit_start_pos + MFX_LEN_PAUSE_1_MS
+          ..self.rds_1_bit_start_pos + MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS
+        {
+          anz_1 += u8::count_ones(daten_rx[i]);
+        }
+        //5% der Bits gesetzt, es wird wohl tatsächlich ein Dekoder geantwortet haben und keine Störung sein
+        //War 50% bis PIKO Giruno, hier kommt ein viel schwächeres Signal ... :-(
+        pos_feedback =
+          Some(anz_1 >= (((MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS) * 8 / 20) as u32));
+      }
+      DdlTelRx::Udp => {
+        //Rückmeldung über UDP vom MFXRDS erwartet.
+        //Da diese mit etwas Verzögerung kommen kann hier mal den aktuellen Zeitpunkt speichern.
+        self.search_new_dekoder_udp_rx_time = Some(Instant::now());
+      }
+    }
+    //Wenn eine UDP Rückmeldung erwartet wird, UDP Rx bis positive Rückmeldung erhalten oder Timeout (=negative Rückmeldung)
+    if let Some(search_new_dekoder_udp_rx_time) = self.search_new_dekoder_udp_rx_time {
       loop {
-        let mut buf = [0u8; 1]; //Es werden nur "S" oder "E" empfangen
-        match socket.recv(&mut buf) {
+        let mut buf = [0u8; 8]; //Es werden nur "S" oder "E" empfangen
+        match self.udp_socket_rds_present.as_mut().unwrap().recv(&mut buf) {
           Ok(received) => {
+            //info!("UDP Rx: {:?}", buf);
             if (received > 0) && (buf[0] == b'S') {
-              pos_feedback = true;
+              pos_feedback = Some(true);
             }
           }
           Err(..) => break,
         }
       }
-      pos_feedback
-    } else {
-      //Rückmeldung von RDS HW im SPI In-Buffer
-      //Rückmeldung wird ers 1ms nach Start Rückmeldefenster ausgewertet da von letzter Schaltflanke
-      //noch Schwingungen vorhanden sein könnten die irrtümlich als RDS Signal ausgewertet werden
-      const MFX_LEN_PAUSE_1_MS: usize = MFX_LEN_PAUSE_6_4_MS / 6;
-      let mut anz_1: u32 = 0;
-      for i in self.rds_1_bit_start_pos + MFX_LEN_PAUSE_1_MS
-        ..self.rds_1_bit_start_pos + MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS
-      {
-        anz_1 += u8::count_ones(daten_rx[i]);
-      }
-      //5% der Bits gesetzt, es wird wohl tatsächlich ein Dekoder geantwortet haben und keine Störung sein
-      //War 50% bis PIKO Giruno, hier kommt ein viel schwächeres Signal ... :-(
-      anz_1 >= (((MFX_LEN_PAUSE_6_4_MS - MFX_LEN_PAUSE_1_MS) * 8 / 20) as u32)
-    };
-    if pos_feedback {
-      //Positive Rückmeldung erhalten
-      result = ResultNeuAnmeldung::InProgress;
-      //Wenn bereits 32 Bit gefunden -> Neuer Dekoder gefunden
-      if self.search_new_dekoder_bits >= 32 {
-        if self.search_new_dekoder_uid == 0 {
-          warn!("MFX Dekodersuche Fehler. UID 0 wird ignoriert.");
-          result =
-            ResultNeuAnmeldung::Error("MFX Dekodersuche Fehler. UID 0 wird ignoriert.".to_string());
-        } else {
-          info!(
-            "MFX Dekodersuche neu gefunden UID {}",
-            self.search_new_dekoder_uid
-          );
-          result = ResultNeuAnmeldung::Ok(self.search_new_dekoder_uid);
-          //Und Neuanmeldezähler inkrementieren
-          self.reg_counter += 1;
-          self.save_registration_counter();
+      //40ms Timeout müssen reichen
+      if Instant::now() - search_new_dekoder_udp_rx_time > Duration::new(0, 40000000) {
+        self.search_new_dekoder_udp_rx_time = None;
+        //Wenn bis jetzt keine positive Rückmeldung,, dann ist sie jetzt negativ
+        if pos_feedback.is_none() {
+          pos_feedback = Some(false);
         }
-        //Für neue Suche bereit machen
-        self.search_new_dekoder_uid = 0;
-        self.search_new_dekoder_bits = 0;
-      } else {
-        info!(
-          "MFX Dekodersuche UID Bit gefunden. Anzahl Bits gefunden {} UID {}",
-          self.search_new_dekoder_bits, self.search_new_dekoder_uid
-        );
-        // mit nächstem Bit weiter suchen
-        self.search_new_dekoder_bits += 1;
       }
+    }
+
+    let mut result = if self.search_new_dekoder_udp_rx_time.is_some() {
+      //Es wird noch auf UDP Antwort gewartet -> InProgress
+      ResultNeuAnmeldung::InProgress
     } else {
-      //Wenn die Suche einen Dekoder gefunden hat und das aktuelle Bit 0 war, dann kann nun noch mit 1 probiert werden
-      if self.search_new_dekoder_bits > 0 {
-        let bit = 0x80000000 >> (self.search_new_dekoder_bits - 1);
-        if (self.search_new_dekoder_uid & bit) == 0 {
-          self.search_new_dekoder_uid |= bit;
-        } else {
-          //Weder 0 noch 1 haben zu einer positiven Antwort geführt -> Abbruch
-          warn!(
-            "Abbruch MFX Dekodersuche. Keine Antwort mehr bei Bit {} Aktuelle UID {}",
-            self.search_new_dekoder_bits, self.search_new_dekoder_uid
-          );
+      ResultNeuAnmeldung::None
+    };
+    //Auswertung der Rückmeldung wenn vorhanden, ansonsten noch nichts machen und später nochmals versuchen
+    if let Some(pos_f) = pos_feedback {
+      //Wenn eine Antwort vorhanden ist -> InProgress
+      result = ResultNeuAnmeldung::InProgress;
+      if pos_f {
+        //Positive Rückmeldung erhalten
+        //Wenn bereits 32 Bit gefunden -> Neuer Dekoder gefunden
+        if self.search_new_dekoder_bits >= 32 {
+          if self.search_new_dekoder_uid == 0 {
+            warn!("MFX Dekodersuche Fehler. UID 0 wird ignoriert.");
+            result = ResultNeuAnmeldung::Error(
+              "MFX Dekodersuche Fehler. UID 0 wird ignoriert.".to_string(),
+            );
+          } else {
+            info!(
+              "MFX Dekodersuche neu gefunden UID {}",
+              self.search_new_dekoder_uid
+            );
+            result = ResultNeuAnmeldung::Ok(self.search_new_dekoder_uid);
+            //Und Neuanmeldezähler inkrementieren
+            self.reg_counter += 1;
+            self.save_registration_counter();
+          }
+          //Für neue Suche bereit machen
           self.search_new_dekoder_uid = 0;
           self.search_new_dekoder_bits = 0;
+        } else {
+          info!(
+            "MFX Dekodersuche UID Bit gefunden. Anzahl Bits gefunden {} UID {}",
+            self.search_new_dekoder_bits, self.search_new_dekoder_uid
+          );
+          // mit nächstem Bit weiter suchen
+          self.search_new_dekoder_bits += 1;
+        }
+      } else {
+        //Wenn die Suche einen Dekoder gefunden hat und das aktuelle Bit 0 war, dann kann nun noch mit 1 probiert werden
+        if self.search_new_dekoder_bits > 0 {
+          let bit = 0x80000000 >> (self.search_new_dekoder_bits - 1);
+          if (self.search_new_dekoder_uid & bit) == 0 {
+            self.search_new_dekoder_uid |= bit;
+          } else {
+            //Weder 0 noch 1 haben zu einer positiven Antwort geführt -> Abbruch
+            warn!(
+              "Abbruch MFX Dekodersuche. Keine Antwort mehr bei Bit {} Aktuelle UID {}",
+              self.search_new_dekoder_bits, self.search_new_dekoder_uid
+            );
+            self.search_new_dekoder_uid = 0;
+            self.search_new_dekoder_bits = 0;
+          }
         }
       }
     }
@@ -1077,8 +1117,8 @@ impl DdlProtokoll for MfxProtokoll {
   /// verlangt werden.
   /// Wenn ein neuer Dekoder gefunden wurde, dann wird dessen UID zurückgegeben, ansonsten der aktuelle Zustand, siehe "ResultNeuAnmeldung".
   /// # Arguments
-  /// * daten_rx : Die beim parallel zum Senden über SPI eingelesenen Daten
-  fn eval_neu_anmeldung(&mut self, daten_rx: &Vec<u8>) -> ResultNeuAnmeldung {
+  /// * daten_rx : Die Art der erwarteten Rückmeldung
+  fn eval_neu_anmeldung(&mut self, daten_rx: &DdlTelRx) -> ResultNeuAnmeldung {
     self.eval_send_search_new_decoder(daten_rx)
   }
 

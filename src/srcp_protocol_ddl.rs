@@ -5,6 +5,14 @@ use std::{
   time::{Duration, Instant},
 };
 
+///Varianten Rückmeldung Dekodersuche (MFX)
+#[derive(Debug, Clone)]
+pub enum DdlTelRx {
+  None,
+  SpiRx(Vec<u8>),
+  Udp,
+}
+
 /// Telegramm zum senden über SPI
 #[derive(Debug, Clone)]
 pub struct DdlTel {
@@ -38,13 +46,13 @@ pub struct DdlTel {
   /// Wenn mehr als ein Telegramm zurückgegeben wird und ein Delay verlangt ist, dann erfolgt die Ausgabe immer abwechlungsweise
   /// mit einem Telegramm zu einer anderen Adresse (was auch ein anderes Protokoll sein kann).
   pub daten: Vec<Vec<u8>>,
-  /// Über SPI eingelesene Daten. Normalerweise nicht verwendete, None.
-  /// Wird bei MFX verwendet, die die Erkennung des RDS Signals über SPI IN erfolgt.
-  /// Wenn verwendet sollte das Telegramm nur einmal gesendet werden.
+  /// Rückmeldung bei Dekodersuche (MFX). Normalerweise nicht verwendete, None.
+  /// Wird bei MFX verwendet. Wenn die Erkennung des RDS Signals über SPI IN erfolgt, dann SpiRx, wenn über UDP empfangen dann Udp.
+  /// Wenn SpiRx verwendet sollte das Telegramm nur einmal gesendet werden.
   /// Ansonsten sind hier nur die mit der letzten Wiederholung empfangenen Daten enthalten.
   /// Wenn verwendet, dann wird es nur für das letzte Telegramm in "daten" angewandt und die Grösse hier muss genau gleich wie dieses
   /// letzte Telegramm sein.
-  pub daten_rx: Option<Vec<u8>>,
+  pub daten_rx: DdlTelRx,
 }
 impl DdlTel {
   /// Neue Instanz Erstellen
@@ -71,7 +79,7 @@ impl DdlTel {
       pause_ende: Duration::ZERO,
       instant_next: None,
       daten: vec![Vec::with_capacity(capacity)],
-      daten_rx: None,
+      daten_rx: DdlTelRx::None,
     }
   }
 }
@@ -234,10 +242,12 @@ pub trait DdlProtokoll {
   /// * port - Port auf dem Schaltdekoder
   /// * value - Gewünschter Zustand des Port Ein/Aus (0/1) oder Begriff (z.B. Erweiterte DCC Dekoder)
   /// * timeout - Wenn das Protokoll eine automatische Ausschaltung des Ausgangs durch den Dekoder unterstützt kann hier die Zeit in ms angegeben werden.
-  ///             None = kein Timeout, dauerhaft schalten. 
+  ///             None = kein Timeout, dauerhaft schalten.
   ///             Duration::ZERO = Port ignorieren, Value ist der zu sendende Begriff (z.B. Erweiterte Funktionsdekoder NMRA/DCC Signalbegriff)
   /// * ddl_tel - DDL Telegramm, bei dem des neue Telegramm hinzugefügt werden soll.
-  fn get_ga_tel(&self, adr: u32, port: usize, value: usize, timeout: Option<Duration>, ddl_tel: &mut DdlTel) -> bool;
+  fn get_ga_tel(
+    &self, adr: u32, port: usize, value: usize, timeout: Option<Duration>, ddl_tel: &mut DdlTel,
+  ) -> bool;
   /// Liefert das Idle Telegramm dieses Protokolles
   /// Return None wenn kein Idle Telegramm vorhanden ist
   fn get_idle_tel(&mut self) -> Option<DdlTel>;
@@ -261,8 +271,8 @@ pub trait DdlProtokoll {
   /// verlangt werden.
   /// Wenn ein neuer Dekoder gefunden wurde, dann wird dessen UID zurückgegeben, ansonsten der aktuelle Zustand, siehe "ResultNeuAnmeldung".
   /// # Arguments
-  /// * daten_rx : Die beim parallel zum Senden über SPI eingelesenen Daten
-  fn eval_neu_anmeldung(&mut self, _daten_rx: &Vec<u8>) -> ResultNeuAnmeldung {
+  /// * daten_rx : Die Art der erwarteten Rückmeldung
+  fn eval_neu_anmeldung(&mut self, _daten_rx: &DdlTelRx) -> ResultNeuAnmeldung {
     ResultNeuAnmeldung::NotSupported
   }
   /// Auslesen optionale GL Parameter (z.B. MFX Lokname und Funktionen)
